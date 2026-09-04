@@ -31,10 +31,22 @@ Run (from repo root):
     .venv/bin/python spark/ml/01_mllib_baseline.py --drop-corridor \
         --tag mllib_gbt_nocorr
 
-Outputs (per run, keyed by --tag):
-    spark/ml/results/leaderboard_<tag>.csv    one row, same shape as sklearn rows
-    spark/ml/results/sweep_<tag>.json         run metadata + provenance,
-                                              same convention as 01_run_sweep.py
+Run (Dataproc Serverless, migration plan M4):
+
+    gcloud dataproc batches submit pyspark spark/ml/01_mllib_baseline.py -- \
+        --cluster \
+        --input  gs://<bucket>/ml/samples/sample_work_train.parquet \
+        --output gs://<bucket>/ml/results
+
+`--input` and `--output` take a local path or a bucket URI, and `--cluster`
+drops the local master so the batch uses the one the runtime supplies. Those
+three flags are the whole difference between the two invocations; nothing about
+the model, the folds or the metrics changes with them.
+
+Outputs (per run, keyed by --tag, under --output):
+    leaderboard_<tag>.csv    one row, same shape as sklearn rows
+    sweep_<tag>.json         run metadata + provenance,
+                             same convention as 01_run_sweep.py
 
 Design notes:
   - `od_corridor` is **target-encoded**, not dropped. The 2026-08-08 run of this
@@ -87,18 +99,27 @@ from spark.ml.src.mllib import (  # noqa: E402
     METRIC_KEYS,
     MLLIB_EXCLUDED_COLUMNS,
     fold_metrics_to_row,
+    is_remote_uri,
+    join_uri,
     self_leakage_weight,
+    spark_master,
     split_column_groups,
+    uri_stem,
 )
 
 DATA_DIR = REPO_ROOT / "spark" / "ml" / "data"
 RESULTS_DIR = REPO_ROOT / "spark" / "ml" / "results"
-DEFAULT_INPUT = DATA_DIR / "sample_work_train.parquet"
+# Strings, not Paths. `Path("gs://b/x")` collapses the duplicate separator into
+# `gs:/b/x`, so a bucket URI cannot survive a round trip through pathlib — see
+# src/mllib.is_remote_uri. The local defaults are stringified here so both
+# invocations travel the same code path instead of only the laptop one.
+DEFAULT_INPUT = str(DATA_DIR / "sample_work_train.parquet")
+DEFAULT_OUTPUT = str(RESULTS_DIR)
 
 FOLD_COL = "_fold"
 
 
-def model_name(input_path: Path, n_rows: int, drop_corridor: bool = False) -> str:
+def model_name(input_uri: str, n_rows: int, drop_corridor: bool = False) -> str:
     """Leaderboard label carrying the pool it was trained on.
 
     The row shares `evaluate()`'s key set so it sorts into the one leaderboard
@@ -112,7 +133,10 @@ def model_name(input_path: Path, n_rows: int, drop_corridor: bool = False) -> st
     ablation carries `_nocorr`. The 2026-08-08 board claimed the unqualified
     name for what is now the ablation, and was renamed when row 2 landed.
     """
-    stem = input_path.stem.removeprefix("sample_").removesuffix("_train")
+    # `uri_stem`, not `Path.stem`: the same file read from GCS and from disk
+    # has to produce the same label, or one input lands in the leaderboard
+    # twice under two names.
+    stem = uri_stem(input_uri).removeprefix("sample_").removesuffix("_train")
     variant = "_nocorr" if drop_corridor else ""
     return f"mllib_gbt{variant}@{stem}{n_rows // 1000}k"
 
@@ -229,10 +253,57 @@ def build_pipeline(
     )
 
 
+def input_label(input_uri: str) -> str:
+    """What the run metadata records as its input.
+
+    A repo-relative path when the file came from the working tree, so the
+    record survives a clone at a different absolute path; the URI verbatim
+    otherwise, because a bucket location has no repository to be relative to.
+    """
+    if is_remote_uri(input_uri):
+        return input_uri
+    try:
+        return str(Path(input_uri).resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return input_uri
+
+
+def write_text(spark, uri: str, text: str) -> None:
+    """Write one small text artifact to a local path or a bucket URI.
+
+    Local goes through pathlib. Remote goes through the JVM's Hadoop
+    FileSystem, which every Spark deployment already has configured, for two
+    reasons. Adding `gcsfs` so pandas could write `gs://` would put a Python
+    dependency on the managed runtime that we have not verified is there. And
+    `spark.write` would turn one named CSV into a directory of part files,
+    changing the artifact shape that `evaluate.leaderboard()` reads — the
+    cloud run has to produce the same two files as the laptop run, or the
+    comparison M4 exists to make is comparing two different things.
+    """
+    if not is_remote_uri(uri):
+        path = Path(uri)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+
+    jvm = spark.sparkContext._jvm
+    hadoop_path = jvm.org.apache.hadoop.fs.Path(uri)
+    fs = hadoop_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    stream = fs.create(hadoop_path, True)  # True = overwrite
+    try:
+        stream.write(bytearray(text.encode("utf-8")))
+    finally:
+        stream.close()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", type=Path, default=DEFAULT_INPUT,
-                    help="train split written by 01_run_sweep.py --write-train")
+    ap.add_argument("--input", default=DEFAULT_INPUT,
+                    help="train split written by 01_run_sweep.py --write-train; "
+                         "a local path or a gs:// URI")
+    ap.add_argument("--output", default=DEFAULT_OUTPUT,
+                    help="directory for leaderboard_<tag>.csv and "
+                         "sweep_<tag>.json; a local path or a gs:// URI")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=RANDOM_STATE)
     ap.add_argument("--max-iter", type=int, default=100,
@@ -254,29 +325,43 @@ def main() -> None:
     # minutes this takes, and the job is not CPU-starved at 8.
     ap.add_argument("--cores", type=int, default=8,
                     help="local Spark threads (default 8; 0 = all cores)")
+    # Not a variant of --cores 0. On Dataproc Serverless the master arrives in
+    # the environment, and setting local[n] there runs the whole job inside the
+    # driver while every allocated executor sits idle — a wrong answer that
+    # looks like a slow one.
+    ap.add_argument("--cluster", action="store_true",
+                    help="do not set a Spark master; take it from the "
+                         "environment (Dataproc Serverless, plan M4)")
     ap.add_argument("--tag", default="mllib_gbt")
     args = ap.parse_args()
 
-    if not args.input.exists():
+    if not is_remote_uri(args.input) and not Path(args.input).exists():
         raise SystemExit(
             f"[error] {args.input} not found — write it first with:\n"
             "        python spark/ml/01_run_sweep.py --write-train "
             "--only ridge --folds 2 --tag worksplit"
         )
 
+    master = spark_master(None if args.cluster else args.cores)
+    builder = SparkSession.builder.appName("mllib-gbt-baseline")
+    if master is not None:
+        # Driver memory is a launch-time setting too, so it belongs with the
+        # local master. On Serverless the runtime sizes the driver and this
+        # value would be an inert but misleading claim in the code.
+        builder = builder.master(master).config(
+            "spark.driver.memory", args.driver_memory
+        )
     spark = (
-        SparkSession.builder.appName("mllib-gbt-baseline")
-        .master("local[*]" if args.cores == 0 else f"local[{args.cores}]")
-        .config("spark.driver.memory", args.driver_memory)
-        # 200 shuffle partitions is the cluster default and pure overhead on a
-        # single machine at this row count.
+        builder
+        # 200 shuffle partitions is the cluster default and pure overhead at
+        # this row count on any executor count we run here.
         .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
     try:
-        df = spark.read.parquet(str(args.input))
+        df = spark.read.parquet(args.input)
         if args.limit_rows is not None:
             # Plain head, not a re-sample: the file was written in
             # train_test_split's shuffled order, so the first n rows are
@@ -310,7 +395,9 @@ def main() -> None:
         n_rows = df.count()  # materialises the cache, fixing the fold assignment
 
         name = model_name(args.input, n_rows, drop_corridor=args.drop_corridor)
-        print(f"[data] {args.input.name}: {n_rows:,} rows -> {name}")
+        print(f"[data] {args.input}: {n_rows:,} rows -> {name}")
+        print(f"[spark] master={master or spark.sparkContext.master} "
+              f"defaultParallelism={spark.sparkContext.defaultParallelism}")
         print(f"[cv]   {args.folds} folds, seed={args.seed}, "
               f"GBT maxIter={args.max_iter} maxDepth={args.max_depth}")
         if target_encoded:
@@ -356,17 +443,17 @@ def main() -> None:
 
         row = fold_metrics_to_row(name, fold_metrics, fit_times)
 
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        board_path = RESULTS_DIR / f"leaderboard_{args.tag}.csv"
+        board_uri = join_uri(args.output, f"leaderboard_{args.tag}.csv")
         import pandas as pd  # local: keeps the Spark path pandas-free until now
 
-        pd.DataFrame([row]).to_csv(board_path, index=False)
+        write_text(spark, board_uri, pd.DataFrame([row]).to_csv(index=False))
 
         meta = {
             "tag": args.tag,
             "model": name,
             "stack": "spark-mllib",
-            "input": str(args.input.relative_to(REPO_ROOT)),
+            "input": input_label(args.input),
+            "output": args.output,
             "rows": n_rows,
             "features": {
                 "categorical": categorical,
@@ -391,15 +478,21 @@ def main() -> None:
             "gbt": {"maxIter": args.max_iter, "maxDepth": args.max_depth},
             "elapsed_s": round(elapsed, 1),
             "spark": spark.version,
+            # Recorded because the cloud run and the laptop run differ here and
+            # nowhere else that matters: defaultParallelism fixes the read
+            # partitioning, which fixes fold membership. Two runs of this script
+            # agree to full precision only when this number agrees.
+            "master": spark.sparkContext.master,
+            "default_parallelism": spark.sparkContext.defaultParallelism,
             "python": platform.python_version(),
             "platform": platform.platform(),
         }
-        meta_path = RESULTS_DIR / f"sweep_{args.tag}.json"
-        meta_path.write_text(json.dumps(meta, indent=2))
+        meta_uri = join_uri(args.output, f"sweep_{args.tag}.json")
+        write_text(spark, meta_uri, json.dumps(meta, indent=2))
 
         print(pd.DataFrame([row]).to_string(index=False))
-        print(f"[write] {board_path}")
-        print(f"[write] {meta_path}")
+        print(f"[write] {board_uri}")
+        print(f"[write] {meta_uri}")
         print(f"[time] {elapsed:.1f}s")
         print("MLLIB BASELINE OK")
     finally:

@@ -88,6 +88,82 @@ MLLIB_NUMERIC_COLUMNS = tuple(dict.fromkeys([*NUMERIC_COLUMNS, *BINARY_COLUMNS])
 # The three metrics every model in this project reports (evaluate.compute_metrics).
 METRIC_KEYS = ("mae", "rmse", "r2")
 
+# Schemes Spark opens through a Hadoop FileSystem rather than the local disk.
+# An explicit tuple, not a regex over "anything://": an unlisted or misspelled
+# scheme should read as a local path and fail with a missing file, which names
+# the problem, rather than reach Spark as a filesystem nobody configured.
+REMOTE_URI_SCHEMES: tuple[str, ...] = (
+    "gs://",
+    "s3://",
+    "s3a://",
+    "hdfs://",
+    "abfss://",
+    "wasbs://",
+)
+
+
+def is_remote_uri(path) -> bool:
+    """True when Spark must open `path` through a bucket filesystem.
+
+    The script needs this because `pathlib` cannot carry a bucket URI:
+    `Path("gs://b/x")` collapses the duplicate separator and stringifies back
+    to `gs:/b/x`, which Spark reads as a relative path. So the input and output
+    locations stay strings, and the three jobs `Path` used to do — classify,
+    stem, join — are the three functions below.
+    """
+    return str(path).startswith(REMOTE_URI_SCHEMES)
+
+
+def uri_stem(path) -> str:
+    """The filename stem of a local path or a bucket URI, matching `Path.stem`.
+
+    `model_name()` builds the leaderboard label from this, so a cloud run and a
+    laptop run of the same file have to produce the same label. Otherwise one
+    input lands in the leaderboard twice under two names, and the table stops
+    meaning what it says.
+
+    A trailing slash is ignored, because a partitioned parquet *directory* is an
+    ordinary Spark input and must not stem to the empty string.
+    """
+    name = str(path).rstrip("/").rsplit("/", 1)[-1]
+    base, dot, _suffix = name.rpartition(".")
+    # `base` is empty for a dotfile (".bashrc"), where the dot is not a suffix
+    # separator. `Path.stem` keeps the whole name there; so does this.
+    return base if (dot and base) else name
+
+
+def join_uri(base, name: str) -> str:
+    """Join an output directory to a filename, for a local path or a bucket URI.
+
+    `os.path.join` would serve for the local half only; this keeps one code
+    path. `rstrip` handles a caller who supplied the trailing slash without
+    producing the doubled separator that a bucket treats as a real empty path
+    segment.
+    """
+    return f"{str(base).rstrip('/')}/{name}"
+
+
+def spark_master(cores):
+    """The `.master()` argument, or None meaning "do not set one".
+
+    None is the cluster case: on Dataproc Serverless the master arrives in the
+    environment, and pinning `local[n]` there would run the whole job inside
+    the driver and silently ignore every executor allocated to it.
+
+    For a local run `cores` is not a performance knob. It fixes
+    `defaultParallelism`, which fixes the read partitioning, which fixes fold
+    membership — the reason the 2026-09-02 parity run reproduced to full float64
+    precision instead of only to fold noise. 0 means every core.
+    """
+    if cores is None:
+        return None
+    if cores < 0:
+        raise ValueError(
+            f"cores must be non-negative or None, got {cores} — Spark accepts "
+            "local[-1] and then fails deep inside the scheduler"
+        )
+    return "local[*]" if cores == 0 else f"local[{cores}]"
+
 
 def split_column_groups(
     columns, drop_target_encoded: bool = False
