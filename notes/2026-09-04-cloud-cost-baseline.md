@@ -54,8 +54,36 @@ builds, the row counts, and the non-deterministic-tiebreak investigation M3 reco
 The mechanism is simple and worth stating plainly, because it is the thing to fix.
 `fact_trips` is 54.56 GiB. A bare `COUNT(*)` on a native BigQuery table is answered from
 metadata and is free. Any `SELECT` carrying an expression — a checksum, a `SUM`, a
-`GROUP BY` — scans the whole table and bills 54.56 GiB. The M3 verification ran that
-pattern repeatedly.
+`GROUP BY` — scans the whole table and bills 54.56 GiB.
+
+### Which SELECTs, specifically
+
+No query in the window is a literal `SELECT *`. Two patterns produce the cost anyway.
+
+| Pattern | Jobs | Cost |
+| --- | ---: | ---: |
+| dbt generated tests | 121 | **$11.57** |
+| other ad-hoc | 112 | $3.11 |
+| checksum via `TO_JSON_STRING(t)` | 7 | $2.66 |
+| literal `SELECT *` | 0 | $0.00 |
+
+**dbt's own test suite is the largest single item, at $11.57.** The generated
+`relationships_stg_yellow…` and `accepted_values_stg_yellow…` tests scan 33.8 GiB each and
+ran 121 times across the `dev`, `prod` and `ci` targets. Nobody wrote those queries by
+hand; dbt emits them, and they are unbounded because the models they test are unbounded.
+
+**The M3 reproducibility checksum is `SELECT *` in all but syntax**, at $2.66 over 7 runs:
+
+```sql
+SELECT COUNT(*) AS n, BIT_XOR(FARM_FINGERPRINT(TO_JSON_STRING(t))) AS checksum
+FROM `dtc-de-project-506916.dbt_prod.fact_trips` t
+```
+
+`TO_JSON_STRING(t)` serialises the whole row, so every column of every row is read. One
+run billed 218.2 GiB rather than 54.6 GiB — that is the M3 incident where a concurrent
+build briefly 4x-duplicated the table, caught by this very check. The check was correct
+and it earned its keep once; running it repeatedly over the full table was the expensive
+way to be right.
 
 ## By identity
 
@@ -87,16 +115,23 @@ BigQuery storage in the project.
 Recorded so the "after" measurement has a hypothesis to test. None of these has been
 applied, and `dbt_prod` is read-only from M4 onward.
 
-1. **Stop full-scan verification.** Use `COUNT(*)` (free, metadata) and
-   `INFORMATION_SCHEMA.TABLE_STORAGE` for row counts and sizes. Reserve a checksum for a
-   partition or a sample, not the whole 54.56 GiB table. This is the $17.34 line.
-2. **Drop `dbt_ci` after each CI run**, or point CI at a partition-limited subset. Halves
+1. **Bound the dbt tests — the biggest item at $11.57.** Restrict `relationships` and
+   `accepted_values` tests to a recent partition, or move them to a sampled model, so a
+   test suite does not scan 33.8 GiB per assertion on every target. Running the same
+   suite against `dev`, `prod` *and* `ci` multiplies it by three.
+2. **Stop full-scan verification, $2.66.** Use `COUNT(*)` (free, from metadata) and
+   `INFORMATION_SCHEMA.TABLE_STORAGE` for row counts and sizes. Reserve a
+   `TO_JSON_STRING` checksum for a partition or a sample. Keep it as a deliberate,
+   occasional integrity check — it is what caught the M3 duplication — not a routine step.
+3. **Drop `dbt_ci` after each CI run**, or point CI at a partition-limited subset. Halves
    storage.
-3. **Partition and cluster `fact_trips`** on the pickup date. A verification or a dashboard
+4. **Partition and cluster `fact_trips`** on the pickup date. A verification or a dashboard
    query then scans one partition instead of 54.56 GiB. This changes a dbt model in the
    submodule, so it is upstream work.
-4. **Use the BigQuery Storage Read API for Spark**, which M4 already proved works and does
-   not bill query bytes.
+5. **Use the BigQuery Storage Read API for Spark**, which M4 proved works: the prep job
+   read all 128,408,323 rows for $0.00 in *query* bytes. It is not free — the Read API
+   bills separately, roughly $0.06 for 54.56 GiB — but it does not touch the $6.25/TiB
+   query meter.
 
 ## How to re-measure
 
