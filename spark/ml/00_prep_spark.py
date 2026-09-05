@@ -51,14 +51,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from spark.ml.src.paths import BACKUP_DIR_ENV, resolve_fact_trips_dir  # noqa: E402
+from spark.ml.src.paths import (  # noqa: E402
+    BACKUP_DIR_ENV,
+    LOCAL_SOURCE,
+    is_bigquery_table,
+    resolve_fact_trips_dir,
+)
+# The URI helpers live in src/mllib.py because that is where their tests live,
+# and M4 needs them in both scripts. Neither module imports pyspark.
+from spark.ml.src.mllib import (  # noqa: E402
+    is_remote_uri,
+    join_uri,
+    spark_master,
+    write_text,
+)
 
 # The 7.1 GB backup lives OUTSIDE the working tree since audit item 10
 # (2026-09-01). `spark/ml/src/paths.py` owns the resolution rule; set
 # MIGRATION_BACKUP_DIR to point the prep at a different disk or mount.
 FACT_TRIPS_DIR = resolve_fact_trips_dir()
 OUT_DIR = REPO_ROOT / "spark" / "ml" / "data"
-STATS_PATH = OUT_DIR / "prep_stats.json"
+DEFAULT_OUTPUT = str(OUT_DIR)
+STATS_NAME = "prep_stats.json"
 
 # --- domain constants (from handoff §2/§4) -----------------------------------
 # temp_band boundaries in °F: Freezing <32, Cold 32-50, Mild 50-68, Warm 68-85, Hot >85
@@ -76,12 +90,18 @@ DROP_COLS = ["tripid", "vendorid", "store_and_fwd_flag", "climate_date", "mjd",
              "pickup_locationid", "dropoff_locationid", "pickup_date"]
 
 
-def build_spark(driver_mem: str = "6g") -> SparkSession:
+def build_spark(driver_mem: str = "6g", master: str | None = "local[*]") -> SparkSession:
+    """`master=None` means take it from the environment — Dataproc Serverless.
+
+    Driver memory rides with the local master: it is a launch-time setting, so
+    on Serverless the runtime sizes the driver and this value would be an inert
+    but misleading claim in the code.
+    """
+    builder = SparkSession.builder.appName("fare-prep")
+    if master is not None:
+        builder = builder.master(master).config("spark.driver.memory", driver_mem)
     spark = (
-        SparkSession.builder
-        .appName("fare-prep")
-        .master("local[*]")
-        .config("spark.driver.memory", driver_mem)
+        builder
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.shuffle.partitions", "64")
         .getOrCreate()
@@ -90,7 +110,25 @@ def build_spark(driver_mem: str = "6g") -> SparkSession:
     return spark
 
 
-def load(spark: SparkSession, limit_files: int | None) -> DataFrame:
+def load(spark: SparkSession, limit_files: int | None,
+         source: str = LOCAL_SOURCE) -> DataFrame:
+    """Read `fact_trips` from the local parquet backup or from BigQuery.
+
+    Migration plan M4 runs both and requires them to agree — 128,408,323 rows
+    and the same p99 caps. Everything downstream of this function is identical
+    for the two, which is what makes that comparison worth anything.
+    """
+    if is_bigquery_table(source):
+        if limit_files is not None:
+            raise SystemExit(
+                "[error] --limit-files reads N parquet files and means nothing "
+                f"against a BigQuery table. Drop it, or use --source {LOCAL_SOURCE}."
+            )
+        print(f"[load] reading BigQuery table {source} through the connector")
+        # A direct table read streams through the Storage Read API and needs no
+        # materialisation dataset. `dbt_prod` stays read-only, per M4.
+        return spark.read.format("bigquery").option("table", source).load()
+
     files = sorted(str(p) for p in FACT_TRIPS_DIR.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(
@@ -220,12 +258,33 @@ def main() -> None:
                     help="fraction of the FULL sample taken for the work sample")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--driver-mem", default="6g")
+    ap.add_argument("--source", default=LOCAL_SOURCE,
+                    help=f"'{LOCAL_SOURCE}' for the parquet backup, or a "
+                         "fully-qualified project.dataset.table read through "
+                         "the BigQuery connector")
+    ap.add_argument("--output", default=DEFAULT_OUTPUT,
+                    help="directory for the two samples and prep_stats.json; "
+                         "a local path or a gs:// URI")
+    ap.add_argument("--cluster", action="store_true",
+                    help="do not set a Spark master; take it from the "
+                         "environment (Dataproc Serverless, plan M4)")
     args = ap.parse_args()
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    spark = build_spark(args.driver_mem)
+    # Refuse a half-recognised source rather than falling through to the local
+    # backup and reporting a row count for a table nobody asked for.
+    if args.source != LOCAL_SOURCE and not is_bigquery_table(args.source):
+        raise SystemExit(
+            f"[error] --source must be {LOCAL_SOURCE!r} or a fully-qualified "
+            f"project.dataset.table; got {args.source!r}. The project id is "
+            "required — see src/paths.is_bigquery_table."
+        )
+
+    if not is_remote_uri(args.output):
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+    spark = build_spark(args.driver_mem,
+                        spark_master(None) if args.cluster else "local[*]")
     try:
-        raw = load(spark, args.limit_files)
+        raw = load(spark, args.limit_files, args.source)
         total = raw.count()
         print(f"[count] raw rows: {total:,}")
 
@@ -241,13 +300,15 @@ def main() -> None:
 
         full = stratified_sample(model_df, args.full_frac, args.seed).cache()
         full_n = full.count()
-        full.repartition(8).write.mode("overwrite").parquet(str(OUT_DIR / "sample_full.parquet"))
-        print(f"[write] sample_full: {full_n:,} rows -> {OUT_DIR / 'sample_full.parquet'}")
+        full_uri = join_uri(args.output, "sample_full.parquet")
+        full.repartition(8).write.mode("overwrite").parquet(full_uri)
+        print(f"[write] sample_full: {full_n:,} rows -> {full_uri}")
 
         work = stratified_sample(full, args.work_frac, args.seed + 1)
         work_n = work.count()
-        work.repartition(2).write.mode("overwrite").parquet(str(OUT_DIR / "sample_work.parquet"))
-        print(f"[write] sample_work: {work_n:,} rows -> {OUT_DIR / 'sample_work.parquet'}")
+        work_uri = join_uri(args.output, "sample_work.parquet")
+        work.repartition(2).write.mode("overwrite").parquet(work_uri)
+        print(f"[write] sample_work: {work_n:,} rows -> {work_uri}")
 
         stats = {
             "raw_rows": total, "guarded_rows": kept,
@@ -255,9 +316,16 @@ def main() -> None:
             "full_frac": args.full_frac, "work_frac": args.work_frac,
             "seed": args.seed, "caps": caps,
             "limit_files": args.limit_files,
+            # M4 compares a cloud run against a laptop run. Which source the
+            # numbers came from is the first thing that comparison needs, and a
+            # stats file that does not say is a file you cannot check.
+            "source": args.source,
+            "output": args.output,
+            "master": spark.sparkContext.master,
         }
-        STATS_PATH.write_text(json.dumps(stats, indent=2))
-        print(f"[stats] wrote {STATS_PATH}")
+        stats_uri = join_uri(args.output, STATS_NAME)
+        write_text(spark, stats_uri, json.dumps(stats, indent=2))
+        print(f"[stats] wrote {stats_uri}")
         print("PREP OK")
     finally:
         spark.stop()

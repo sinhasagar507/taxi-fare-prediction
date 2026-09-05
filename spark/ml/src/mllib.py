@@ -36,6 +36,8 @@ Spark baseline sorts into the one leaderboard next to the sklearn sweep instead
 of living in a parallel table.
 """
 
+from pathlib import Path
+
 import numpy as np
 
 from .features import CATEGORICAL_COLUMNS
@@ -163,6 +165,41 @@ def spark_master(cores):
             "local[-1] and then fails deep inside the scheduler"
         )
     return "local[*]" if cores == 0 else f"local[{cores}]"
+
+
+def write_text(spark, uri, text: str) -> None:
+    """Write one small text artifact to a local path or a bucket URI.
+
+    Used by both M4 scripts — `01_mllib_baseline.py` for the leaderboard row and
+    the run metadata, `00_prep_spark.py` for `prep_stats.json`.
+
+    `spark` is a parameter rather than an import, so this module keeps the
+    no-pyspark contract in its docstring and the local branch needs no
+    SparkSession at all: pass None for a local write.
+
+    Local goes through pathlib. Remote goes through the JVM's Hadoop
+    FileSystem, which every Spark deployment already has configured, for two
+    reasons. Adding `gcsfs` so pandas could write `gs://` would put a Python
+    dependency on the managed runtime that we have not verified is there. And
+    `spark.write` would turn one named file into a directory of part files,
+    changing the artifact shape `evaluate.leaderboard()` reads — the cloud run
+    has to produce the same files as the laptop run, or the comparison M4
+    exists to make is comparing two different things.
+    """
+    if not is_remote_uri(uri):
+        path = Path(uri)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+
+    jvm = spark.sparkContext._jvm
+    hadoop_path = jvm.org.apache.hadoop.fs.Path(uri)
+    fs = hadoop_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    stream = fs.create(hadoop_path, True)  # True = overwrite
+    try:
+        stream.write(bytearray(text.encode("utf-8")))
+    finally:
+        stream.close()
 
 
 def split_column_groups(

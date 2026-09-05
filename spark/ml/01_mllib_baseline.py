@@ -105,6 +105,7 @@ from spark.ml.src.mllib import (  # noqa: E402
     spark_master,
     split_column_groups,
     uri_stem,
+    write_text,
 )
 
 DATA_DIR = REPO_ROOT / "spark" / "ml" / "data"
@@ -266,34 +267,6 @@ def input_label(input_uri: str) -> str:
         return str(Path(input_uri).resolve().relative_to(REPO_ROOT))
     except ValueError:
         return input_uri
-
-
-def write_text(spark, uri: str, text: str) -> None:
-    """Write one small text artifact to a local path or a bucket URI.
-
-    Local goes through pathlib. Remote goes through the JVM's Hadoop
-    FileSystem, which every Spark deployment already has configured, for two
-    reasons. Adding `gcsfs` so pandas could write `gs://` would put a Python
-    dependency on the managed runtime that we have not verified is there. And
-    `spark.write` would turn one named CSV into a directory of part files,
-    changing the artifact shape that `evaluate.leaderboard()` reads — the
-    cloud run has to produce the same two files as the laptop run, or the
-    comparison M4 exists to make is comparing two different things.
-    """
-    if not is_remote_uri(uri):
-        path = Path(uri)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        return
-
-    jvm = spark.sparkContext._jvm
-    hadoop_path = jvm.org.apache.hadoop.fs.Path(uri)
-    fs = hadoop_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
-    stream = fs.create(hadoop_path, True)  # True = overwrite
-    try:
-        stream.write(bytearray(text.encode("utf-8")))
-    finally:
-        stream.close()
 
 
 def main() -> None:

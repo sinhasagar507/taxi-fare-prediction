@@ -518,3 +518,47 @@ class TestRemoteIO:
         """Spark accepts `local[-1]` and then fails deep inside the scheduler."""
         with pytest.raises(ValueError):
             mllib.spark_master(-1)
+
+
+class TestWriteText:
+    """Both scripts write two small text artifacts, to a local path or a bucket.
+
+    The function lives here rather than in either script because M4 needs it in
+    both: `01_mllib_baseline.py` writes the leaderboard row and the run
+    metadata, `00_prep_spark.py` writes `prep_stats.json`. It takes the
+    SparkSession as an argument instead of importing pyspark, so this module
+    keeps the no-pyspark contract stated in its docstring and the local branch
+    stays testable on the host venv.
+
+    Only the local branch is unit-tested. The remote branch needs a live JVM,
+    and M4's cloud run is what exercises it.
+    """
+
+    def test_writes_a_local_file(self, tmp_path):
+        target = tmp_path / "leaderboard_x.csv"
+        mllib.write_text(None, str(target), "model,mae\nm,0.5\n")
+        assert target.read_text() == "model,mae\nm,0.5\n"
+
+    def test_creates_missing_parent_directories(self, tmp_path):
+        """The local results directory may not exist yet. The old script called
+        `RESULTS_DIR.mkdir(parents=True)` inline; that has to survive the move
+        or the first run on a clean clone fails at the write, after the fit."""
+        target = tmp_path / "results" / "nested" / "sweep_x.json"
+        mllib.write_text(None, str(target), "{}")
+        assert target.read_text() == "{}"
+
+    def test_overwrites_an_existing_file(self, tmp_path):
+        """Re-running a tag replaces its artifacts. Appending would produce a
+        leaderboard with two rows claiming one model."""
+        target = tmp_path / "leaderboard_x.csv"
+        target.write_text("stale")
+        mllib.write_text(None, str(target), "fresh")
+        assert target.read_text() == "fresh"
+
+    def test_no_spark_session_is_needed_for_a_local_write(self, tmp_path):
+        """Passing None proves the local branch never touches the JVM — the
+        prep script writes prep_stats.json after `spark.stop()` would be
+        equally valid, and a laptop run must not depend on py4j."""
+        target = tmp_path / "x.json"
+        mllib.write_text(None, str(target), "ok")
+        assert target.read_text() == "ok"
