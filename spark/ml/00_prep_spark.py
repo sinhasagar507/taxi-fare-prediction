@@ -85,9 +85,39 @@ LEAKAGE_COLS = [
     "tip_amount", "tolls_amount", "mta_tax", "extra", "improvement_surcharge",
     "total_amount", "payment_type", "payment_type_description",
 ]
-# Identifiers / unused columns dropped to keep the sample lean
-DROP_COLS = ["tripid", "vendorid", "store_and_fwd_flag", "climate_date", "mjd",
+# Identifiers / unused columns dropped to keep the sample lean.
+# `tripid` is deliberately NOT here any more: plan §5.3 needs it as the stable
+# row key for out-of-fold fold assignment. It is carried to the sample and
+# excluded from the feature matrix by features.EXCLUDED_COLUMNS, not by dropping
+# it here — the encoder cannot use a column the prep threw away.
+DROP_COLS = ["vendorid", "store_and_fwd_flag", "climate_date", "mjd",
              "pickup_locationid", "dropoff_locationid", "pickup_date"]
+
+# The modeling schema. Every downstream stage reads the samples this list
+# defines, so it is the prep's real output contract — a module constant rather
+# than a local, so tests can assert on it without a SparkSession.
+KEEP_COLS = [
+    # stable row key — §5.3 assigns OOF folds with crc32(tripid). The plan
+    # rejects monotonically_increasing_id(): it is not stable across
+    # re-materialisation, so a wrong fold would be silent. Never a feature.
+    "tripid",
+    # raw pickup timestamp — §4a's deferred temporal split orders rows by it.
+    # pickup_hour / pickup_dow are derived from it and kept separately.
+    # Never a feature.
+    "pickup_datetime",
+    # target + raw reference
+    "fare_capped", "fare_amount",
+    # numeric predictors
+    "trip_distance", "distance_capped", "trip_duration_min",
+    "passenger_count", "temperature", "pickup_hour", "pickup_dow",
+    # categoricals
+    "service_type", "pickup_borough", "dropoff_borough",
+    "pickup_zone", "dropoff_zone", "temp_band",
+    # binary flag + raw ratecode for audit
+    "is_airport_trip", "ratecodeid",
+    # optional climate (precip confirmed null-effect; kept for exploration only)
+    "humidity", "windSpeed", "visibility",
+]
 
 
 def build_spark(driver_mem: str = "6g", master: str | None = "local[*]") -> SparkSession:
@@ -224,21 +254,8 @@ def apply_caps(df: DataFrame, caps: dict) -> DataFrame:
 
 
 def select_model_columns(df: DataFrame) -> DataFrame:
-    keep = [
-        # target + raw reference
-        "fare_capped", "fare_amount",
-        # numeric predictors
-        "trip_distance", "distance_capped", "trip_duration_min",
-        "passenger_count", "temperature", "pickup_hour", "pickup_dow",
-        # categoricals
-        "service_type", "pickup_borough", "dropoff_borough",
-        "pickup_zone", "dropoff_zone", "temp_band",
-        # binary flag + raw ratecode for audit
-        "is_airport_trip", "ratecodeid",
-        # optional climate (precip confirmed null-effect; kept for exploration only)
-        "humidity", "windSpeed", "visibility",
-    ]
-    return df.select(*keep)
+    """Narrow to the modeling schema. The list lives in KEEP_COLS."""
+    return df.select(*KEEP_COLS)
 
 
 def stratified_sample(df: DataFrame, frac: float, seed: int) -> DataFrame:
