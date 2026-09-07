@@ -997,6 +997,7 @@ Actual upload was 4.10 GiB against the ~5 GB estimate. Per-file sizes are record
       after the reproducibility check completed, so only the one `dbt_prod` copy remains
       (plus the untouched 7.053 GiB GCS restore).
 - [ ] Reconnect Looker Studio to `dbt_prod`. **Owner-only** — hand off, not a blocker.
+      Step-by-step workflow, traps, and current status: `notes/2026-09-04-looker-studio-reconnect-runbook.md`.
 - [ ] Push the branch so CI's `dbt build --target ci` runs once with `GCP_SA_KEY` set
       (the owner pushes — audit item 2), and push the submodule's `3f927a3` to
       `origin/main` so the fix is authoritative remotely. **Owner-only** — hand off, not a
