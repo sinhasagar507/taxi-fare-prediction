@@ -178,3 +178,77 @@ Status. The Why is the important field — it is what a future session quotes ba
 - **Reopen if:** Dataproc Serverless moves its default runtime, or a model the project
   actually uses needs a class that 4.0.1 lacks — a measured need, not a newer release.
 - **Status:** LOCKED (2026-09-02)
+
+## D-012 — The staging dedup key is the emitted row, not `(vendorid, pickup_datetime)`
+
+- **Decision:** `stg_yellow_taxi_data.sql` and `stg_green_taxi_data.sql` deduplicate on the
+  **whole projected row**, not on `(vendorid, pickup_datetime)`. `tripid` becomes a
+  surrogate key over every emitted source column, because the two-column key was unique
+  only as a side effect of the broken dedup. This **reverses the approach** M3 took while
+  keeping the thing M3 wanted — a build that reproduces. It also **voids M3's completion**:
+  M3 is un-ticked in the migration plan Status, and its 128,408,323 is retired.
+- **Why:** measured 2026-09-06, yellow, 2015-01-01 to 2016-12-31.
+  - **270.** That is the number of genuinely duplicated rows in 277,171,036 source rows —
+    0.0001%. The full-row key finds 277,170,766 distinct trips.
+  - **174,868,364.** That is the number of real trips the current key discards — 63.09%.
+    It groups 277.17M rows into 102,302,402 buckets, a mean of 2.69 rows each, which is
+    simply NYC's yellow trip rate per vendor per second. `(vendorid, pickup_datetime)`
+    names a vendor-second, not a trip. The model's own comment concedes it: 74.4M groups
+    "hold rows that disagree on the zone pair", and identical duplicates cannot disagree.
+  - The p99 caps prove the bias, with the §4 guards applied:
+
+    | Source | Rows | `dist_p99` | `dur_p99` | `fare_p99` |
+    | --- | ---: | ---: | ---: | ---: |
+    | Raw, no dedup | 274,556,460 | 18.67 | 58.32 | 52.00 |
+    | Local backup — pre-M3, arbitrary winner | 100,357,273 | 18.80 | 58.15 | 52.03 |
+    | `dbt_prod` — post-M3, `dropoff ASC` | 99,983,155 | 15.47 | 38.45 | 51.00 |
+
+    An arbitrary winner is an unbiased sample of its group, so the pre-M3 build reproduced
+    the raw tail to 0.7%. M3's `order by tpep_dropoff_datetime` makes the survivor the
+    **shortest trip** in each group, and the tail collapses. M3 was right about determinism
+    and wrong about the statistic. It did not create this defect; it stopped it hiding.
+  - `fare_p99` held at 52 across all three row sets because it sits on a mass point, so it
+    could not have flagged this. Distance and duration did. The JFK flat-fare explanation
+    for that mass point is **INFERRED, not measured.**
+- **How to apply:** project first, then take `DISTINCT`. That is deterministic by
+  construction, so no `order by` chooses a winner and none can be biased. Projecting first
+  also sidesteps the type problem the green model records, where the external table
+  declares `INT64` for `trip_type` and `congestion_surcharge` while the parquet stores
+  `DOUBLE` — neither column is emitted, so neither reaches the comparison. The dbt project
+  is a **submodule**: the edit lands in `github.com/sinhasagar507/ny_taxi_analytics`, then
+  the pointer moves. Prepared models and the full evidence are in
+  `notes/2026-09-06-prep-cloud-baseline.md`.
+- **What this invalidates.** Accept these before starting, because they are the cost:
+  - M3's completion, its 128,408,323, and its checksum agreement. All four builds agreed
+    with each other and all four dropped the same 63%.
+  - The M4 prep run of 2026-09-06 and its caps. `spark/ml/data/prep_stats.json` holds the
+    local values meanwhile; they match the raw source to 0.7% and are still provisional.
+  - Every modeling result, because `fare_capped` is the target and its cap moves. The §5b
+    table does not compare across this line. The sealed holdout partition goes with it.
+  - About 44 Looker Studio charts, which read `dbt_prod.fact_trips` directly.
+  - The trip counts in `README.md` and `CASE_STUDY.md`. Both understate the pipeline by
+    roughly 2.7x on the yellow side — the defect makes the project look smaller than it is.
+  - Storage roughly triples, from 54.56 GiB toward 150 GiB, so about $3/month rather than
+    $1.02. Recurring, not a one-off.
+  - Growth factors, **now measured** on a 2016-01 `dbt_dev` build of the fix
+    (PR sinhasagar507/ny_taxi_analytics#11): **yellow 2.65x, green 1.24x.** Green is lower
+    volume, so fewer trips collide per vendor-second, as expected. The source-level yellow
+    figure over the full window is 2.71x; 2.65x is one month of the built mart, and the two
+    agree.
+- **Validated 2026-09-07**, before any `dbt_prod` rebuild. `dbt build` on the fix returned
+  `PASS=21 WARN=0 ERROR=0 SKIP=0`, and the `unique` test on `tripid` passes on its merits
+  rather than by collapsing real trips. The caps return to the raw distribution:
+
+  | Service | Source | Rows | `fare_p99` | `dist_p99` | `dur_p99` |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | Yellow | `dbt_prod`, current | 4,032,716 | 52.00 | 15.46 | 35.77 |
+  | Yellow | `dbt_dev`, fixed | 10,693,594 | 52.00 | **18.51** | **53.22** |
+  | Green | `dbt_prod`, current | 1,156,751 | 43.00 | 13.37 | 57.30 |
+  | Green | `dbt_dev`, fixed | 1,437,324 | 44.00 | **13.96** | **69.32** |
+
+  Yellow's distance p99 returns to 18.51 against 18.67 measured on the raw source. That is
+  the decision's prediction meeting a build.
+- **Reopen if:** a measurement shows the source really does carry duplicate trips that a
+  full-row key fails to catch. A suspicion that duplicates exist is not a reason — that
+  suspicion is what produced this defect, and 270 rows is what it was worth.
+- **Status:** LOCKED (2026-09-07)

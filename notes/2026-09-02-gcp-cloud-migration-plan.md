@@ -1391,7 +1391,13 @@ Each with options and a recommendation. None is taken by this document.
       50 objects, 4.10 GiB, 312,790,342 trip rows across yellow and green. Gate met at
       **0 failed, 301 passed, 1 skipped** — all 7 integration failures flipped. Per-file
       sizes in `notes/gcp-reference.md`. `dbt_prod_restore/` untouched at 204 objects.
-- [x] M3 — `dbt_prod` rebuilt from the cloud, four ways, all in agreement. **Complete
+- [ ] M3 — **VOIDED by D-012 on 2026-09-07.** The rebuild is reproducible and counts the
+      wrong rows: the staging dedup key discards 63.09% of yellow trips, and M3's own
+      tiebreak biases the survivors short. 128,408,323 is retired. The record below
+      stands as history; do not quote its numbers. Re-run M3 after the dedup fix lands.
+  <details><summary>Original M3 record, superseded</summary>
+
+  - [x] M3 — `dbt_prod` rebuilt from the cloud, four ways, all in agreement. **Complete
       2026-09-03.** The planned check against 128,781,646 turned out to target an
       unreproducible number — a missing `ORDER BY` in two staging models let BigQuery pick
       an arbitrary tiebreak winner on every build. Fixed upstream (submodule `3f927a3`);
@@ -1402,6 +1408,7 @@ Each with options and a recommendation. None is taken by this document.
       section. `fact_trips` measured at 54.56 GiB, refuting the 3.2 assumption of 15-30
       GiB. Gate: **0 failed, 301 passed, 1 skipped** — unchanged from M2, so this proves no
       regression, not new progress. `dbt_dev` dropped and all 9 DAGs re-paused after.
+  </details>
 - [ ] M4 — Serverless smoke inside fold noise; prep from BigQuery matches `prep_stats.json`
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
 - [ ] §5c run scoped per decision 3
