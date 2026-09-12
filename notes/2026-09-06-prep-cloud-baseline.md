@@ -197,11 +197,25 @@ nothing, because of the `--cluster` defect.
 
 ## Next
 
-1. Fix the two staging models upstream, and the `tripid` surrogate key with them.
-2. Rebuild `dbt_prod`. Yellow grows **2.71x**, measured. Green is the same defect
+1. [x] Fix the two staging models upstream, and the `tripid` surrogate key with them.
+   **Done 2026-09-12:** `sinhasagar507/ny_taxi_analytics#11` merged as `25f3186`;
+   pointer bumped in `c25fb96`.
+2. [x] Rebuild `dbt_prod`. Yellow grows **2.71x**, measured. Green is the same defect
    but its factor is **NOT MEASURED** — green is lower volume, so fewer trips
    collide per vendor-second, and its factor is probably smaller. Budget the
    rebuild for a fact table of roughly 300M+ rows, not 128M. Re-measure the caps.
-3. Fix `--cluster` before the next batch, so it uses its executors.
-4. Re-run the prep, and only then set the baseline.
-5. Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.
+   **Done 2026-09-12:** `fact_trips` = 307,339,039 rows, 130.81 GiB. Guarded rows
+   grew **2.70x** on yellow (99,983,155 → 270,075,802) and **1.33x** on green
+   (26,128,754 → 34,691,074; the old green figure is 126,111,909 − 99,983,155).
+   Caps, same guards and percentile form as the table above:
+
+   | Service | `fare_p99` | `dist_p99` | `dur_p99` |
+   | --- | ---: | ---: | ---: |
+   | Yellow | 52.00 | **18.51** | **57.75** |
+   | Green | 45.00 | 14.15 | 59.97 |
+
+   Yellow returns to the raw source (row A: 18.67, 58.32) within 1.0%. Build $1.56,
+   measured. Full record: M3 in `notes/2026-09-02-gcp-cloud-migration-plan.md`.
+3. [ ] Fix `--cluster` before the next batch, so it uses its executors.
+4. [ ] Re-run the prep, and only then set the baseline.
+5. [ ] Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.

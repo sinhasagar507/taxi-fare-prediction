@@ -943,6 +943,48 @@ Actual upload was 4.10 GiB against the ~5 GB estimate. Per-file sizes are record
 
 ### M3 — dbt marts in the cloud, and the reproducibility check that matters
 
+**Current record — re-run 2026-09-12, after D-012.** Everything below this block is the
+voided 2026-09-03 record, kept as history. Do not quote its counts.
+
+- [x] **Fix merged upstream.** `sinhasagar507/ny_taxi_analytics#11` merged as `25f3186`
+      (admin merge, owner-approved: branch protection wants one review and the owner cannot
+      approve their own PR). Pointer moved `3f927a3` → `25f3186` in `c25fb96`.
+- [x] **One `dbt build --target prod`, CLI, alone.** Docker was down, so the Airflow stack
+      and its 9 DAGs could not run; no dbt process on the host; no running query job in the
+      project; no Actions run in progress. 2026-09-12 23:38–23:43 UTC:
+      `PASS=21 WARN=0 ERROR=0 SKIP=0`. The `unique` tests on both staging `tripid`s pass.
+- [x] **Counts, from `__TABLES__`:** `fact_trips` **307,339,039** rows, **130.81 GiB**
+      (was 128,408,323 and 54.56 GiB — 2.39x rows, 2.40x bytes).
+      `dim_monthly_zones_revenue` 11,750 rows, `dim_zones` 265.
+- [x] **Caps, one grouped query**, full window, §4 guards (`fare >= 0`, `dist > 0`,
+      `dur >= 1.0`), `APPROX_QUANTILES(x, 100)[OFFSET(99)]`:
+
+  | Service | Rows | Guarded | `fare_p99` | `dist_p99` | `dur_p99` |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | Yellow | 271,905,544 | 270,075,802 | 52.00 | **18.51** | **57.75** |
+  | Green | 35,433,495 | 34,691,074 | 45.00 | 14.15 | 59.97 |
+
+  Yellow guarded is **2.70x** the voided build's 99,983,155. Yellow `dist_p99` 18.51 and
+  `dur_p99` 57.75 sit within 1.0% of the raw source's 18.67 and 58.32 (D-012). Yellow
+  guarded is 98.37% of the raw source's 274,556,460; the cause of the 1.63% gap was not
+  measured here.
+- [x] **Reproducibility — NOT re-measured by a second build.** The new staging models are
+      `select distinct` over the projected row, deterministic by construction (D-012), so no
+      checksum scan was run. A second build would cost about $1.56 (below).
+- **Cost, measured** from `JOBS_BY_PROJECT`: the build billed 256.29 GiB = **$1.56**
+      (tables 96.59 GiB $0.59, tests 159.70 GiB $0.97). Verification billed 16.02 GiB
+      = $0.10. Session total **$1.66**. The pre-build estimate was 302.18 GiB = $1.84, from
+      the 2026-09-03 build's per-node bytes with `dim_monthly_zones_revenue` scaled 3x. A
+      plain dry-run said 24.38 GiB = $0.15, because it reports 0 bytes for every read of
+      the GCS external tables.
+- **Gate:** `pytest tests/ --ignore=tests/unit/ml/test_oof_encode.py` — **340 passed,
+      1 skipped** before the bump and after it (the ignored file is the deliberate red test
+      for §5.3).
+- **Not done:** Looker Studio still reads `dbt_prod.fact_trips` and every chart moved;
+      `dbt_dev` holds PR 11's 2016-01 test build and was not checked.
+
+<details><summary>Voided 2026-09-03 record</summary>
+
 - [x] `dbt_build_marts` from the local compose stack (target `prod`), and the CLI form.
       Built to `dbt_dev` first as the dry run.
 - [x] **The check, as revised:** the plan's original target of **128,781,646** turned out
@@ -1009,6 +1051,8 @@ Actual upload was 4.10 GiB against the ~5 GB estimate. Per-file sizes are record
       DAG run.
 - **Cost:** ~$1.02/month storage on the one surviving copy; queries free (all scans this
       milestone stayed inside the 1 TiB free tier).
+
+</details>
 
 ### M4 — Spark on Dataproc Serverless: smoke, then §5c
 
@@ -1391,10 +1435,15 @@ Each with options and a recommendation. None is taken by this document.
       50 objects, 4.10 GiB, 312,790,342 trip rows across yellow and green. Gate met at
       **0 failed, 301 passed, 1 skipped** — all 7 integration failures flipped. Per-file
       sizes in `notes/gcp-reference.md`. `dbt_prod_restore/` untouched at 204 objects.
-- [ ] M3 — **VOIDED by D-012 on 2026-09-07.** The rebuild is reproducible and counts the
-      wrong rows: the staging dedup key discards 63.09% of yellow trips, and M3's own
-      tiebreak biases the survivors short. 128,408,323 is retired. The record below
-      stands as history; do not quote its numbers. Re-run M3 after the dedup fix lands.
+- [x] M3 — **re-run 2026-09-12 on the D-012 fix. Complete.** Submodule `25f3186`
+      (PR #11), one `dbt build --target prod`, `PASS=21 ERROR=0`. `fact_trips` =
+      **307,339,039** rows, 130.81 GiB. Yellow `dist_p99` **18.51**, `dur_p99` 57.75;
+      yellow guarded rows 2.70x the voided build. Build $1.56, session $1.66. Gate
+      340 passed, 1 skipped, before and after. Full record in the M3 section.
+- M3's first run was **VOIDED by D-012 on 2026-09-07.** That rebuild is reproducible and
+      counts the wrong rows: the staging dedup key discards 63.09% of yellow trips, and M3's
+      own tiebreak biases the survivors short. 128,408,323 is retired. The record below
+      stands as history; do not quote its numbers.
   <details><summary>Original M3 record, superseded</summary>
 
   - [x] M3 — `dbt_prod` rebuilt from the cloud, four ways, all in agreement. **Complete

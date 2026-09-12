@@ -248,6 +248,12 @@ Status. The Why is the important field — it is what a future session quotes ba
 
   Yellow's distance p99 returns to 18.51 against 18.67 measured on the raw source. That is
   the decision's prediction meeting a build.
+- **Rebuilt 2026-09-12.** `dbt_prod` on submodule `25f3186` (PR #11), one
+  `dbt build --target prod`, `PASS=21 WARN=0 ERROR=0`. `fact_trips` = 307,339,039 rows
+  (yellow 271,905,544, green 35,433,495), 130.81 GiB. Full window, §4 guards: yellow
+  270,075,802 guarded, `fare_p99` 52.00, `dist_p99` **18.51**, `dur_p99` **57.75**; green
+  34,691,074 guarded, 45.00, 14.15, 59.97. Yellow guarded rows are 2.70x the voided
+  99,983,155. Build $1.56, session $1.66, measured from `JOBS_BY_PROJECT`.
 - **Reopen if:** a measurement shows the source really does carry duplicate trips that a
   full-row key fails to catch. A suspicion that duplicates exist is not a reason — that
   suspicion is what produced this defect, and 270 rows is what it was worth.
