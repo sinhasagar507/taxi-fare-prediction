@@ -60,6 +60,7 @@ from spark.ml.src.paths import (  # noqa: E402
 # The URI helpers live in src/mllib.py because that is where their tests live,
 # and M4 needs them in both scripts. Neither module imports pyspark.
 from spark.ml.src.mllib import (  # noqa: E402
+    is_local_master,
     is_remote_uri,
     join_uri,
     spark_master,
@@ -120,16 +121,17 @@ KEEP_COLS = [
 ]
 
 
-def build_spark(driver_mem: str = "6g", master: str | None = "local[*]") -> SparkSession:
-    """`master=None` means take it from the environment — Dataproc Serverless.
+def build_spark(driver_mem: str = "6g", master: str = "local[*]") -> SparkSession:
+    """The master is always set. `mllib.spark_master` explains why: on
+    Dataproc Serverless an unset master resolves to `local`.
 
-    Driver memory rides with the local master: it is a launch-time setting, so
+    Driver memory rides with a local master: it is a launch-time setting, so
     on Serverless the runtime sizes the driver and this value would be an inert
     but misleading claim in the code.
     """
-    builder = SparkSession.builder.appName("fare-prep")
-    if master is not None:
-        builder = builder.master(master).config("spark.driver.memory", driver_mem)
+    builder = SparkSession.builder.appName("fare-prep").master(master)
+    if is_local_master(master):
+        builder = builder.config("spark.driver.memory", driver_mem)
     spark = (
         builder
         .config("spark.sql.session.timeZone", "UTC")
@@ -283,8 +285,8 @@ def main() -> None:
                     help="directory for the two samples and prep_stats.json; "
                          "a local path or a gs:// URI")
     ap.add_argument("--cluster", action="store_true",
-                    help="do not set a Spark master; take it from the "
-                         "environment (Dataproc Serverless, plan M4)")
+                    help="use the Dataproc Serverless master instead of "
+                         "local[*] (plan M4)")
     args = ap.parse_args()
 
     # Refuse a half-recognised source rather than falling through to the local

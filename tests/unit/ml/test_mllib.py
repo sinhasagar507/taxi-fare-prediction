@@ -499,11 +499,28 @@ class TestRemoteIO:
 
     # -- Spark master ------------------------------------------------------
 
-    def test_spark_master_is_none_on_a_cluster(self):
-        """None means "do not call .master() at all". On Dataproc Serverless the
-        master arrives in the environment; setting `local[n]` there would run
-        the whole job inside the driver and quietly ignore every executor."""
-        assert mllib.spark_master(None) is None
+    def test_spark_master_on_a_cluster_is_the_dataproc_master(self):
+        """The cluster case names the master explicitly. It used to return
+        None, meaning "take it from the environment" — and on Serverless
+        runtime 3.0 the environment says `local`. probe-master-20260913a
+        measured it: MASTER=local, spark.master=local, one thread, zero
+        executors. probe-master-20260913b passed `dataproc` and got two."""
+        assert mllib.spark_master(None) == mllib.DATAPROC_SERVERLESS_MASTER
+        assert mllib.DATAPROC_SERVERLESS_MASTER == "dataproc"
+
+    def test_spark_master_on_a_cluster_is_never_a_local_master(self):
+        """The property the 2026-09-07 prep batch lacked. It passed --cluster,
+        ran 57 minutes on one driver thread, and billed no executor."""
+        assert not mllib.is_local_master(mllib.spark_master(None))
+
+    def test_is_local_master_recognises_every_local_form(self):
+        """Driver memory rides with a local master only, so the scripts ask
+        this. `local` without brackets is the form Serverless injects."""
+        for master in ("local", "local[*]", "local[8]"):
+            assert mllib.is_local_master(master)
+
+    def test_is_local_master_is_false_for_a_cluster_master(self):
+        assert not mllib.is_local_master("dataproc")
 
     def test_spark_master_pins_the_local_thread_count(self):
         """`--cores 8` is not a performance knob. It fixes defaultParallelism,

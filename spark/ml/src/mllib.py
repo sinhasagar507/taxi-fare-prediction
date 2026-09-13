@@ -145,12 +145,24 @@ def join_uri(base, name: str) -> str:
     return f"{str(base).rstrip('/')}/{name}"
 
 
-def spark_master(cores):
-    """The `.master()` argument, or None meaning "do not set one".
+# The master Dataproc Serverless runtime 3.0 declares in its own
+# spark-defaults.conf. The service then appends `spark.master=local` after it
+# and exports MASTER=local, so a job that sets no master runs on one driver
+# thread with zero executors. Measured 2026-09-13: probe-master-20260913a set
+# none and got `local`, defaultParallelism 1, 0 executors; -20260913b set this
+# and got 2 executors, with every task on a worker host. Why the service
+# injects `local` is not known — only that it does.
+DATAPROC_SERVERLESS_MASTER = "dataproc"
 
-    None is the cluster case: on Dataproc Serverless the master arrives in the
-    environment, and pinning `local[n]` there would run the whole job inside
-    the driver and silently ignore every executor allocated to it.
+
+def spark_master(cores):
+    """The `.master()` argument. Always a string; always set it.
+
+    None is the cluster case, and it names `DATAPROC_SERVERLESS_MASTER`
+    explicitly. It once meant "do not set one, the master arrives in the
+    environment". On Serverless the environment's master is `local`, so every
+    --cluster batch before 2026-09-13 ran inside the driver and billed no
+    executor.
 
     For a local run `cores` is not a performance knob. It fixes
     `defaultParallelism`, which fixes the read partitioning, which fixes fold
@@ -158,13 +170,23 @@ def spark_master(cores):
     precision instead of only to fold noise. 0 means every core.
     """
     if cores is None:
-        return None
+        return DATAPROC_SERVERLESS_MASTER
     if cores < 0:
         raise ValueError(
             f"cores must be non-negative or None, got {cores} — Spark accepts "
             "local[-1] and then fails deep inside the scheduler"
         )
     return "local[*]" if cores == 0 else f"local[{cores}]"
+
+
+def is_local_master(master: str) -> bool:
+    """True for `local`, `local[n]` and `local[*]`.
+
+    Driver memory is a launch-time setting, so the scripts set it with a local
+    master only. On Serverless the runtime sizes the driver, and the value
+    would be an inert but misleading claim in the code.
+    """
+    return master == "local" or master.startswith("local[")
 
 
 def write_text(spark, uri, text: str) -> None:

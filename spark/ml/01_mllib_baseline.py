@@ -39,7 +39,7 @@ Run (Dataproc Serverless, migration plan M4):
         --output gs://<bucket>/ml/results
 
 `--input` and `--output` take a local path or a bucket URI, and `--cluster`
-drops the local master so the batch uses the one the runtime supplies. Those
+swaps the local master for the Serverless one, `dataproc`. Those
 three flags are the whole difference between the two invocations; nothing about
 the model, the folds or the metrics changes with them.
 
@@ -99,6 +99,7 @@ from spark.ml.src.mllib import (  # noqa: E402
     METRIC_KEYS,
     MLLIB_EXCLUDED_COLUMNS,
     fold_metrics_to_row,
+    is_local_master,
     is_remote_uri,
     join_uri,
     self_leakage_weight,
@@ -298,13 +299,13 @@ def main() -> None:
     # minutes this takes, and the job is not CPU-starved at 8.
     ap.add_argument("--cores", type=int, default=8,
                     help="local Spark threads (default 8; 0 = all cores)")
-    # Not a variant of --cores 0. On Dataproc Serverless the master arrives in
-    # the environment, and setting local[n] there runs the whole job inside the
-    # driver while every allocated executor sits idle — a wrong answer that
-    # looks like a slow one.
+    # Not a variant of --cores 0. A local master on Dataproc Serverless runs the
+    # whole job inside the driver while every allocated executor sits idle — a
+    # wrong answer that looks like a slow one. Leaving the master unset does
+    # the same: the runtime's own default is `local` (mllib.spark_master).
     ap.add_argument("--cluster", action="store_true",
-                    help="do not set a Spark master; take it from the "
-                         "environment (Dataproc Serverless, plan M4)")
+                    help="use the Dataproc Serverless master instead of "
+                         "local[n] (plan M4)")
     ap.add_argument("--tag", default="mllib_gbt")
     args = ap.parse_args()
 
@@ -316,14 +317,12 @@ def main() -> None:
         )
 
     master = spark_master(None if args.cluster else args.cores)
-    builder = SparkSession.builder.appName("mllib-gbt-baseline")
-    if master is not None:
+    builder = SparkSession.builder.appName("mllib-gbt-baseline").master(master)
+    if is_local_master(master):
         # Driver memory is a launch-time setting too, so it belongs with the
         # local master. On Serverless the runtime sizes the driver and this
         # value would be an inert but misleading claim in the code.
-        builder = builder.master(master).config(
-            "spark.driver.memory", args.driver_memory
-        )
+        builder = builder.config("spark.driver.memory", args.driver_memory)
     spark = (
         builder
         # 200 shuffle partitions is the cluster default and pure overhead at
