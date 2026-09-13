@@ -1064,11 +1064,22 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
       `spark.jars.packages=com.google.cloud.spark:spark-4.0-bigquery:0.45.0` (the connector
       is not exercised by this run; the point is that the coordinate resolves). Compare to
       the 2.4 baseline exactly as in the local 4.0.1 parity test.
-- [ ] `00_prep_spark.py` reading `dbt_prod.fact_trips` through the connector instead of
-      the local backup; assert the count **as rebuilt in M3 — 128,408,323, not the
-      128,781,646 quoted earlier in this plan** (M3 found and fixed a non-deterministic
-      tiebreak; see that section) — and the p99 caps in `prep_stats.json`
-      (Yellow $52 / 18.7 mi, Green $45 / 14.15 mi) match the local run.
+- [x] `00_prep_spark.py` reading `dbt_prod.fact_trips` through the connector instead of
+      the local backup. **Done 2026-09-13** on the D-012 rebuild, so the target count is
+      M3's re-run, not the retired 128,408,323. Batch `prep-m4-20260913-full`,
+      SUCCEEDED on its own in 25.6 min: `raw_rows` **307,339,039** and `guarded_rows`
+      **304,766,876**, both exact matches to M3; `master` `dataproc`, 4 executors.
+      Caps: Yellow $52.0 / 18.5 mi, Green $44.5 / 13.9 mi, duration 57.5 min. Yellow
+      matches M3's BigQuery caps to 0.01; green is 0.5 and 0.25 below them, cause not
+      measured. **Cost: 32,053.8 DCU-seconds = $0.53**; BigQuery `JOBS_BY_PROJECT`
+      billed 0 bytes for the batch (Storage Read API bytes UNVERIFIED — reads are not
+      jobs). Full record, three-way cap table and submit command:
+      `notes/2026-09-06-prep-cloud-baseline.md`.
+- [x] **`--cluster` fixed first (`24175b0`).** Every batch before 2026-09-13 ran on the
+      driver alone, `--cluster` or not — billed DCU is 1.00–1.03x a driver-only figure
+      for all of them, `m4-wiring-195925` included. Serverless runtime 3.0 injects
+      `spark.master=local` and `MASTER=local`; a job that sets no master gets one
+      thread. `--cluster` now names `dataproc`. Three probes, $0.04 together.
 - [ ] §5c MLlib arm on `sample_full` — after §5's encoder work decides *which* MLlib arm.
 - [ ] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
       nothing exists.
@@ -1459,6 +1470,10 @@ Each with options and a recommendation. None is taken by this document.
       regression, not new progress. `dbt_dev` dropped and all 9 DAGs re-paused after.
   </details>
 - [ ] M4 — Serverless smoke inside fold noise; prep from BigQuery matches `prep_stats.json`
+      **Prep half done 2026-09-13:** `--cluster` fixed (`24175b0`), then
+      `prep-m4-20260913-full` read 307,339,039 rows and guarded 304,766,876, both exact to
+      M3, in 25.6 min for $0.53. Open: the smoke, and setting the local baseline from
+      this output.
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
 - [ ] §5c run scoped per decision 3
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped

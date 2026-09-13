@@ -3,6 +3,8 @@
 **Created:** 2026-09-06
 **Milestone:** M4, `notes/2026-09-02-gcp-cloud-migration-plan.md`
 **Batch:** `prep-m4-20260907-020206`, region `us-central1`, runtime `3.0`
+**Re-run:** `prep-m4-20260913-full`, 2026-09-13, on the rebuilt table — see
+"The re-run on the rebuilt table" below.
 
 **Invoke when:** you touch `dbt_prod.fact_trips`, the p99 caps, the staging
 models, or any modeling result built on either. **Read this before rebuilding
@@ -160,11 +162,18 @@ Everything downstream of `dbt_prod`, because the fact table roughly triples.
 
 `spark/ml/00_prep_spark.py` on Dataproc Serverless, reading
 `dtc-de-project-506916.dbt_prod.fact_trips` through
-`com.google.cloud.spark:spark-4.0-bigquery:0.45.0`. Output at
-`gs://primary-data-dtc-506916/ml/prep`, where its `prep_stats.json` remains as
-the record of the rejected measurement. `raw_rows` was 128,408,323, an exact
-match to M3, and the guarded count 126,111,909 matched an independent BigQuery
-SQL computation exactly. **The Spark read is faithful. The table it read is not.**
+`com.google.cloud.spark:spark-4.0-bigquery:0.45.0`. Its driver log printed
+`raw_rows` 128,408,323, an exact match to M3, and a guarded count of 126,111,909
+that matched an independent BigQuery SQL computation exactly. **The Spark read is
+faithful. The table it read is not.**
+
+The batch never wrote output. Its driver log reaches `[caps]` at 02:56 UTC and
+has no `[write]`, `[stats]` or `PREP OK` line before the 03:01 cancel. The
+`prep_stats.json` under `ml/prep` at the time was dated 2026-09-05 01:25 UTC,
+written by an earlier batch, `m4-prep-20260905b`, on the same table with the same
+counts and caps. That file is preserved at
+`gs://primary-data-dtc-506916/ml/prep-rejected-m4-prep-20260905b/prep_stats.json`;
+the 2026-09-13 re-run overwrote `ml/prep`.
 
 The run also carried two new columns, added in the same change: `tripid` for
 §5.3's row key and `pickup_datetime` for §4a's temporal split. Both are held out
@@ -173,13 +182,33 @@ drops rather than allows.
 
 ### A separate defect the run exposed: `--cluster` does nothing
 
-`prep_stats.json` recorded `"master": "local[*]"` while the batch held 2
-executors of 4 cores. They idled. `build_spark` never calls `.master()` when
-master is `None`, and Spark then falls back to its own `local[*]` default,
-because the runtime's `spark.master` is not among the batch properties.
-`mllib.spark_master`'s docstring warns of exactly this. The job ran about 57
-minutes, did not exit after writing its output, and was cancelled to stop the
-spend. Both `_SUCCESS` markers and `prep_stats.json` were already written.
+**Corrected 2026-09-13.** The first version of this section inferred the cause.
+Three of its claims were wrong: the `"master": "local[*]"` record came from
+another batch, no executor idled because none ever ran, and the job never wrote
+its output. The measured account:
+
+- **The `local[*]` record is from `m4-prep-20260905b`, not this batch.** That
+  batch's args hold no `--cluster`, so `build_spark` pinned `local[*]` as
+  designed. It finished at 01:25:37 UTC; the file is dated 01:25:12.
+- **This batch passed `--cluster` and still ran local.** Its billed DCU,
+  16,741 DCU-seconds, is 1.03x a driver-only figure (4 vCPU × 0.6 + 22.4 GB × 0.1
+  = 4.64 DCU, over 3,488 s running). Every earlier batch in the project matches
+  its driver alone the same way, at 1.00–1.03x, including `m4-wiring-195925`,
+  which also passed `--cluster`. All 8,019 driver-log lines come from the driver
+  node; no worker node ever logged; the RDD cache-spill warnings are in
+  `driver.log`, so the driver JVM computed the blocks.
+- **Root cause, measured by `probe-master-20260913a`:** Serverless runtime 3.0
+  sets the master to `local`. The image's `spark-defaults.conf` declares
+  `spark.master=dataproc`, and the service appends `spark.master=local` after it;
+  it also exports `MASTER=local`. `build_spark` set no master, so the JVM's
+  `spark.master` was `local`: `defaultParallelism` 1, **one thread**, 0 executors.
+  That is why the batch ran 57 minutes on 128M rows. Why the service injects
+  `local` is **not known** — only that it does.
+- **The fix, measured by `probe-master-20260913b`:** passing `dataproc` explicitly
+  gave 2 registered executors, and every task ran on the two worker hosts.
+  `mllib.spark_master(None)` now returns `DATAPROC_SERVERLESS_MASTER`, and both
+  scripts always call `.master()` (commit `24175b0`). `probe-master-20260913c`
+  ran the committed code with no override: master `dataproc`, 2 executors.
 
 ## Cost
 
@@ -192,8 +221,67 @@ spend. Both `_SUCCESS` markers and `prep_stats.json` were already written.
 | BigQuery — row count and schema check | $0 — table metadata |
 | **Total** | **about $0.58** |
 
-Rate from `notes/2026-09-04-cloud-cost-baseline.md`. About half the DCU bought
-nothing, because of the `--cluster` defect.
+Rate from `notes/2026-09-04-cloud-cost-baseline.md`. The DCU bought one driver
+running on one thread, because of the `--cluster` defect; no executor was billed.
+
+## The re-run on the rebuilt table (2026-09-13)
+
+`prep-m4-20260913-full`: `00_prep_spark.py` at `24175b0`, runtime 3.0, reading the
+D-012 `dbt_prod.fact_trips`. **SUCCEEDED on its own**, no cancel, `PREP OK` in the
+driver log. Four executor nodes logged work — the cap set below.
+
+```bash
+gcloud dataproc batches submit pyspark \
+  gs://primary-data-dtc-506916/dependencies/m4prep-24175b0/00_prep_spark.py \
+  --batch=prep-m4-20260913-full --region=us-central1 --version=3.0 \
+  --service-account=dataproc-batch@dtc-de-project-506916.iam.gserviceaccount.com \
+  --py-files=gs://primary-data-dtc-506916/dependencies/m4prep-24175b0/prep_deps.zip \
+  --properties=spark.jars.packages=com.google.cloud.spark:spark-4.0-bigquery:0.45.0,spark.dynamicAllocation.maxExecutors=4 \
+  --ttl=90m -- --cluster --source dtc-de-project-506916.dbt_prod.fact_trips \
+  --output gs://primary-data-dtc-506916/ml/prep
+```
+
+`maxExecutors=4` is a cost cap, not a tuning result. The global quota is 32 vCPUs,
+so dynamic allocation could reach 7 executors; 4 keeps a 90-minute TTL run under
+$3. `prep_deps.zip` is `spark/ml/src/*.py` plus empty `__init__.py` files — the
+repository uses namespace packages, and the zip copies the 2026-09-07 layout.
+
+| Field | Value |
+| --- | ---: |
+| `raw_rows` | **307,339,039** — exact match to M3's `__TABLES__` count |
+| `guarded_rows` | **304,766,876** (99.16%) — exact match to M3's SQL, 270,075,802 + 34,691,074 |
+| `sample_full_rows` / `sample_work_rows` | 30,482,494 / 1,828,181 |
+| `master` | **`dataproc`** |
+
+Caps, three ways. Local is the pre-M3 backup on disk; BigQuery is M3's
+`APPROX_QUANTILES` on the rebuilt table; cloud Spark is this run's
+`percentile_approx(…, 0.99, 1000)` on the same table. Duration is per-service in
+BigQuery and global in the prep.
+
+| Cap | Local `prep_stats.json` | BigQuery SQL (M3) | Cloud Spark (this run) |
+| --- | ---: | ---: | ---: |
+| Yellow `fare_p99` | 52.0 | 52.00 | 52.0 |
+| Yellow `dist_p99` | 18.7 | 18.51 | 18.5 |
+| Green `fare_p99` | 45.0 | 45.00 | **44.5** |
+| Green `dist_p99` | 14.15 | 14.15 | **13.9** |
+| `duration_p99_min` | 57.57 | 57.75 Y / 59.97 G | 57.5 |
+
+Yellow agrees across all three to 0.2. Green sits **below** BigQuery by 0.5 on fare
+and 0.25 on distance, with the same rows under both. Both are approximate
+quantiles with different algorithms; the cause of the green gap was **not
+measured**.
+
+| Cost | Measured |
+| --- | --- |
+| Wall time | 25.6 min (05:46:31–06:12:05 UTC), 24.9 min running |
+| Dataproc | 32,053.8 DCU-seconds × $0.06/DCU-hour = **$0.53**; mean 21.5 DCU while running |
+| Shuffle storage | 2,337,247 GB-seconds; its price is **UNVERIFIED** and not added |
+| BigQuery | `JOBS_BY_PROJECT` holds one job from the batch account, the connector's row count, **0 bytes billed**. The Storage Read API reads are not jobs, so their bytes are **UNVERIFIED** |
+| Probes a/b/c | 295.2 + 1,064.4 + 1,202.2 DCU-seconds = **$0.04** |
+
+Against the cancelled batch: 2.4x the rows, 25.6 minutes instead of 57-plus,
+finished instead of cancelled, for $0.53 instead of $0.28 that bought nothing
+usable.
 
 ## Next
 
@@ -216,6 +304,11 @@ nothing, because of the `--cluster` defect.
 
    Yellow returns to the raw source (row A: 18.67, 58.32) within 1.0%. Build $1.56,
    measured. Full record: M3 in `notes/2026-09-02-gcp-cloud-migration-plan.md`.
-3. [ ] Fix `--cluster` before the next batch, so it uses its executors.
-4. [ ] Re-run the prep, and only then set the baseline.
+3. [x] Fix `--cluster` before the next batch, so it uses its executors.
+   **Done 2026-09-13:** `24175b0`; root cause and probes in the defect section above.
+4. [x] Re-run the prep. **Done 2026-09-13:** `prep-m4-20260913-full`, section above.
+   - [ ] **Then set the baseline — still open.** `spark/ml/data/prep_stats.json`
+     and the samples on disk still describe the pre-M3 local run. Replacing them
+     with the `gs://…/ml/prep` output regenerates the holdout partition, so it is
+     its own step.
 5. [ ] Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.
