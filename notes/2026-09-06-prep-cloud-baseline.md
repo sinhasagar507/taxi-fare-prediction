@@ -285,8 +285,10 @@ usable.
 
 ## Open anomaly — the green caps disagree between Spark and BigQuery (2026-09-13)
 
-**Status: OPEN. It blocks "set the baseline" (Next, item 4).** Found in the re-run
-above and recorded the same day.
+**Status: RESOLVED-as-method (2026-09-13).** Q1 put both green Spark caps inside
+the exact p98.9–p99.1 band, and Q3 reconciled the raw source to `fact_trips` — see
+"Results" below. **The owner's A/B decision is still open, and it blocks "set the
+baseline" (Next, item 4).** Found in the re-run above and recorded the same day.
 
 On the same rows — `guarded_rows` 304,766,876 in both — yellow agrees and green does not:
 
@@ -308,7 +310,8 @@ $0.005 over green. §5.2's measured fold spread is ±0.0015 MAE, on the pre-D-01
 The gap cannot move a model comparison. What it can do is make two runs of the prep
 disagree.
 
-**Candidate causes — neither is measured:**
+**Candidate causes — as written before the measurement.** Results below: cause 1
+holds; cause 2 is not needed to explain the gap.
 
 1. **The method.** Both engines compute approximate quantiles.
    `percentile_approx(x, 0.99, 1000)` may return any value whose rank lies within
@@ -350,9 +353,102 @@ so a green defect found after it would force a redo.
   equality with Q1. Worth it if the laptop and the cloud must agree, or if the prep
   will run again.
 
+### Results (2026-09-13)
+
+Q2b, Q3 and Q1 ran once each, in that order, from `.venv` with the project keyfile.
+Before them, the `fact_trips` metadata matched the table the prep read: modified
+2026-09-12T23:43:45Z, 307,339,039 rows.
+
+**Q2b — no climate fan-out.** `stg_climate_data` holds 731 rows and 731 distinct
+`climate_date` values.
+
+**Q3 — the raw source reconciles to `fact_trips` for both services.**
+
+| Service | Guarded raw | Zones known | Zones unknown | Zones known − M3 guarded | Raw guarded − M3 guarded |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Yellow | 274,556,460 | 270,075,812 | 4,480,648 | **+10** | 4,480,658 |
+| Green | 34,819,053 | 34,691,075 | 127,978 | **+1** | 127,979 |
+
+- The zone join (`borough != 'Unknown'`) explains **4,480,648 of yellow's 4,480,658**
+  gap. The 10 rows left over are the zones-known excess. Green: 127,978 of 127,979,
+  with 1 row left over.
+- The residuals fit the staging dedup removing true duplicates — D-012 counted 270 on
+  yellow before the guards. **INFERRED:** Q3 does not dedup, so it cannot name the rows.
+- Green had never been checked against its raw source. It reconciles to 1 row.
+- Exact raw p99s on the zones-known rows: yellow fare 52.0, distance 18.54, duration
+  58.05 min; green 45.0, 14.18, 59.9167 min. Each equals Q1's exact p99 on
+  `fact_trips` below, so the 10 and 1 extra rows move no cap.
+
+**Q1 — exact caps on `fact_trips`.** Guarded rows match M3 per service: yellow
+270,075,802, green 34,691,074, all 304,766,876. Duration is in minutes. CDF is the
+exact share of guarded rows at or below the cap.
+
+| Cap | Guarded rows | Distinct values | p98.9 | Exact p99 | p99.1 | Spark | BigQuery (M3) | CDF at Spark | CDF at BigQuery |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Yellow fare | 270,075,802 | 2,687 | 52.00 | 52.00 | 52.00 | 52.0 | 52.00 | 0.995631 | 0.995631 |
+| **Green fare** | 34,691,074 | 2,271 | 44.00 | 45.00 | 46.50 | **44.5** | 45.00 | 0.989461 | 0.990010 |
+| Yellow distance | 270,075,802 | 7,034 | 18.37 | 18.54 | 18.76 | 18.5 | 18.51 | 0.989893 | 0.989923 |
+| **Green distance** | 34,691,074 | 5,112 | 13.80 | 14.18 | 14.60 | **13.9** | 14.15 | 0.989306 | 0.989941 |
+| Yellow duration | 270,075,802 | 51,409 | 56.6000 | 58.0500 | 59.6833 | — | 57.75 | — | 0.989804 |
+| Green duration | 34,691,074 | 49,819 | 57.3333 | 59.9167 | 63.2500 | — | 59.97 | — | 0.990018 |
+| All duration | 304,766,876 | 67,440 | 56.6667 | 58.1833 | 59.9000 | 57.5 | — | 0.989572 | — |
+
+**Verdicts, green:**
+
+- `fare_p99` — **IN BAND.** 44.00 ≤ 44.5 ≤ 46.50. The share of rows at or below 44.5
+  is 0.989461.
+- `dist_p99` — **IN BAND.** 13.80 ≤ 13.9 ≤ 14.60. The share at or below 13.9 is
+  0.989306.
+
+Every other cap in the table, Spark and BigQuery, is also inside its band.
+
+**What it means.**
+
+- **Cause 1, the method, holds.** Both engines return values inside the rank
+  tolerance, so neither is broken. Green's band is wide — $2.50 on fare, 0.80 mi on
+  distance. Yellow's fare band is zero wide: p98.9 = p99.1 = 52.00, so at least
+  0.66% of yellow guarded rows (about 1.79M) have a fare of exactly 52.00. The mass
+  point is now measured; the JFK flat-fare reason for it is still **INFERRED**.
+- **Cause 2, the rows, is not needed.** Both Spark caps fall inside the band that
+  M3's rows produce. Spark's per-service row counts are still **not measured**,
+  because `prep_stats.json` does not record them.
+- **The M4 gate cannot be equality under A.** Two correct runs can return different
+  caps inside the band. Under A the gate is the band; under B it is equality with
+  Q1's exact p99.
+
+**Cost, from `JOBS_BY_PROJECT` at $6.25/TiB:**
+
+| Query | Job | Bytes billed | Dollars |
+| --- | --- | ---: | ---: |
+| Q2b | `b840a381…` | 10,485,760 (10 MiB minimum) | $0.0001 |
+| Q3 | `452eb8c5…` | 70,065,848,320 (65.25 GiB) | $0.3983 |
+| Q1 | `91db85c3…` | 17,175,674,880 (16.00 GiB) | $0.0976 |
+| The `JOBS_BY_PROJECT` lookup | `fef09de8…` | 20,971,520 | $0.0001 |
+| **Total** | | 87,272,980,480 (81.28 GiB) | **$0.4961** |
+
+**Q3 cost 2.66x its estimate.** The estimate was at most about $0.15, bounded by the
+20.65 GiB of an earlier yellow full-row query. Q3 billed 65.25 GiB across the yellow
+and green external tables. Why the bound failed is **UNVERIFIED** — the bytes were
+not split by table. The stop rule covered dry runs only, and spend stayed under $1.
+Price the next query on these external tables from 65.25 GiB, not 20.65.
+
+**Recommendation: A.** The owner decides.
+
+- Both Spark caps are correct for their method, so there is nothing to fix.
+- The effect is below the noise. Q1 puts 365,599 green rows above 44.5
+  (1 − 0.989461 of 34,691,074), each moved by at most $0.50: at most $0.0006 on the
+  mean target over all rows, as "Size" above bounded it. §5.2's fold spread is
+  ±0.0015 MAE, on the pre-D-012 data.
+- B costs a test-first change and a $0.53 re-run. The re-run also regenerates the
+  samples and the holdout.
+- B is the better choice if the laptop and the cloud must produce identical caps, or
+  if the prep will run again. It also brings a per-service duration cap, which the
+  prep does not have.
+
 <details><summary>The prepared queries — Q1 and Q3 for this anomaly, Q2 for §5.3</summary>
 
-All three dry-ran clean on 2026-09-13. None has been run.
+All three dry-ran clean on 2026-09-13. Q2b, Q3 and Q1 ran on 2026-09-13 — see
+"Results" above. Q2 and Q2c have not run.
 
 ```sql
 -- Q1. Exact p99 caps on dbt_prod.fact_trips, the §4 guards the prep applies.
@@ -483,7 +579,8 @@ FROM `dtc-de-project-506916.dbt_prod.fact_trips`;
 
 The detour inserts one step before an existing one. It adds nothing after it.
 
-1. **Q1 + Q3**, one analysis, at most about $0.25.
+1. **Q1 + Q3**, one analysis, at most about $0.25. **Done 2026-09-13** for $0.4961,
+   measured — Q3 overran its estimate; see "Results".
 2. **A or B.** A costs nothing further. B is a test-first change and one re-run.
 3. **Back on plan:** Next item 4, "set the baseline" → M4 smoke → §5.3 → §5.4 → §5c →
    M5 → M6, as the migration plan's Status list orders them.
@@ -583,8 +680,12 @@ step it already belongs to.
 3. [x] Fix `--cluster` before the next batch, so it uses its executors.
    **Done 2026-09-13:** `24175b0`; root cause and probes in the defect section above.
 4. [x] Re-run the prep. **Done 2026-09-13:** `prep-m4-20260913-full`, section above.
-   - [ ] **First, resolve the green cap anomaly** — "Open anomaly" above: Q1 + Q3,
-     then decision A or B. This is the only detour; it blocks the next line.
+   - [x] **First, resolve the green cap anomaly** — "Open anomaly" above: Q1 + Q3.
+     **Done 2026-09-13, RESOLVED-as-method:** both green Spark caps are IN BAND
+     (fare 44.00 ≤ 44.5 ≤ 46.50, distance 13.80 ≤ 13.9 ≤ 14.60), and Q3 reconciles
+     raw to `fact_trips` to 10 yellow rows and 1 green row. $0.4961.
+   - [ ] **The owner's decision, A or B** — "Results" under "Open anomaly"
+     recommends A. This is the only detour; it blocks the next line.
    - [ ] **Then set the baseline — still open.** It also settles the sample sizes
      against modeling plan §8, §4a's temporal test set, and the local source default
      — see the table under "The detour, and the way back". `spark/ml/data/prep_stats.json`

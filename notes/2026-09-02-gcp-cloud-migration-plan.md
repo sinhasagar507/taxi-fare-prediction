@@ -1070,8 +1070,10 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
       SUCCEEDED on its own in 25.6 min: `raw_rows` **307,339,039** and `guarded_rows`
       **304,766,876**, both exact matches to M3; `master` `dataproc`, 4 executors.
       Caps: Yellow $52.0 / 18.5 mi, Green $44.5 / 13.9 mi, duration 57.5 min. Yellow
-      matches M3's BigQuery caps to 0.01; green is 0.5 and 0.25 below them, cause not
-      measured. **Cost: 32,053.8 DCU-seconds = $0.53**; BigQuery `JOBS_BY_PROJECT`
+      matches M3's BigQuery caps to 0.01; green is 0.5 and 0.25 below them. **Measured
+      2026-09-13:** both green caps sit inside the exact p98.9–p99.1 band, so the gap is
+      the approximate-quantile method — "Open anomaly" in the prep-cloud-baseline note.
+      **Cost: 32,053.8 DCU-seconds = $0.53**; BigQuery `JOBS_BY_PROJECT`
       billed 0 bytes for the batch (Storage Read API bytes UNVERIFIED — reads are not
       jobs). Full record, three-way cap table and submit command:
       `notes/2026-09-06-prep-cloud-baseline.md`.
@@ -1083,7 +1085,11 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
 - [ ] §5c MLlib arm on `sample_full` — after §5's encoder work decides *which* MLlib arm.
 - [ ] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
       nothing exists.
-- **Gate:** smoke run inside fold noise of the local result; prep stats identical.
+- **Gate:** smoke run inside fold noise of the local result. Prep compared to **M3's
+  BigQuery numbers**, not the local `prep_stats.json`, which is pre-D-012: raw rows
+  307,339,039 and guarded rows 304,766,876 (yellow 270,075,802, green 34,691,074)
+  exactly. Caps inside Q1's exact p98.9–p99.1 band under option A, or equal to Q1's
+  exact p99 under option B — "Open anomaly" in `notes/2026-09-06-prep-cloud-baseline.md`.
 - **Rollback:** delete the `ml/` prefix. Serverless leaves nothing behind.
 - **Cost:** ~$0.20 smoke; ~$3 MLlib at scale; < $1 prep (3.2).
 
@@ -1469,11 +1475,13 @@ Each with options and a recommendation. None is taken by this document.
       GiB. Gate: **0 failed, 301 passed, 1 skipped** — unchanged from M2, so this proves no
       regression, not new progress. `dbt_dev` dropped and all 9 DAGs re-paused after.
   </details>
-- [ ] M4 — Serverless smoke inside fold noise; prep from BigQuery matches `prep_stats.json`
+- [ ] M4 — Serverless smoke inside fold noise; prep from BigQuery matches M3's BigQuery numbers
       **Prep half done 2026-09-13:** `--cluster` fixed (`24175b0`), then
       `prep-m4-20260913-full` read 307,339,039 rows and guarded 304,766,876, both exact to
-      M3, in 25.6 min for $0.53. Open: the smoke, and setting the local baseline from
-      this output.
+      M3, in 25.6 min for $0.53. **Green cap anomaly:** measured 2026-09-13, both green
+      caps IN BAND, RESOLVED-as-method; the owner's A/B decision is open — "Open anomaly"
+      in `notes/2026-09-06-prep-cloud-baseline.md`. Open after it: setting the local
+      baseline from this output, then the smoke.
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
 - [ ] §5c run scoped per decision 3
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped
