@@ -262,6 +262,84 @@ class TestMakeHoldout:
 
 
 # ---------------------------------------------------------------------------
+# make_temporal_test — the second sealed test set, by date (plan §4a)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def dated_frame():
+    """Shaped like a prep sample, before build_features: one trip per day over
+    the 24-month window, so the last two months are 61 of 731 rows."""
+    days = pd.date_range("2015-01-01 08:30", "2016-12-31 08:30", freq="D")
+    return pd.DataFrame(
+        {
+            "pickup_datetime": days,
+            "fare_capped": np.arange(len(days), dtype=float),
+            "service_type": ["Yellow", "Green"] * (len(days) // 2) + ["Yellow"],
+        }
+    )
+
+
+class TestMakeTemporalTest:
+    """The random 80/20 lets 2016-06 inform a 2016-03 prediction. The temporal
+    set holds out the last two months whole, so Phase 5 can score the champion
+    on trips later than anything it trained on. It carves the raw frame,
+    because build_features drops `pickup_datetime`."""
+
+    def test_default_cutoff_is_the_first_of_november_2016(self):
+        assert ev.TEMPORAL_CUTOFF == pd.Timestamp("2016-11-01")
+
+    def test_rows_from_the_cutoff_on_form_the_temporal_set(self, dated_frame):
+        _, temporal = ev.make_temporal_test(dated_frame)
+        assert (temporal["pickup_datetime"] >= pd.Timestamp("2016-11-01")).all()
+        assert len(temporal) == 61
+
+    def test_rows_before_the_cutoff_stay_for_the_holdout_and_sweep(self, dated_frame):
+        before, _ = ev.make_temporal_test(dated_frame)
+        assert (before["pickup_datetime"] < pd.Timestamp("2016-11-01")).all()
+        assert len(before) == 670
+
+    def test_a_trip_exactly_at_the_cutoff_is_temporal(self):
+        df = pd.DataFrame(
+            {"pickup_datetime": pd.to_datetime(["2016-10-31 23:59:59", "2016-11-01 00:00:00"])}
+        )
+        before, temporal = ev.make_temporal_test(df)
+        assert temporal["pickup_datetime"].tolist() == [pd.Timestamp("2016-11-01")]
+        assert len(before) == 1
+
+    def test_no_row_is_lost_or_duplicated(self, dated_frame):
+        before, temporal = ev.make_temporal_test(dated_frame)
+        assert not set(before.index) & set(temporal.index)
+        assert sorted(before.index.tolist() + temporal.index.tolist()) == dated_frame.index.tolist()
+
+    def test_index_labels_are_kept_so_rows_stay_traceable(self, dated_frame):
+        before, temporal = ev.make_temporal_test(dated_frame)
+        assert (dated_frame.loc[temporal.index, "fare_capped"] == temporal["fare_capped"]).all()
+        assert (dated_frame.loc[before.index, "fare_capped"] == before["fare_capped"]).all()
+
+    def test_custom_cutoff_is_honoured(self, dated_frame):
+        _, temporal = ev.make_temporal_test(dated_frame, cutoff=pd.Timestamp("2016-12-01"))
+        assert len(temporal) == 31
+
+    def test_a_frame_without_the_date_column_raises(self):
+        """A pre-D-012 sample carries no `pickup_datetime`. Returning an empty
+        temporal set would look like a carve and silently seal nothing."""
+        with pytest.raises(ValueError, match="pickup_datetime"):
+            ev.make_temporal_test(pd.DataFrame({"fare_capped": [1.0, 2.0]}))
+
+    def test_the_random_holdout_then_draws_only_from_before_the_cutoff(self, dated_frame):
+        """The order the sweep uses: carve by date first, then the random 80/20
+        on what is left. No sealed or training row may come from the last two
+        months."""
+        before, temporal = ev.make_temporal_test(dated_frame)
+        X = before.drop(columns=["fare_capped"])
+        y = before["fare_capped"]
+        X_tr, X_te, _, _ = ev.make_holdout(X, y, stratify_columns=())
+        for part in (X_tr, X_te):
+            assert (part["pickup_datetime"] < ev.TEMPORAL_CUTOFF).all()
+            assert set(part.index).isdisjoint(temporal.index)
+
+
+# ---------------------------------------------------------------------------
 # write_train_split — handing the sealed split's TRAIN half to Spark
 # ---------------------------------------------------------------------------
 

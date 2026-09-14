@@ -27,6 +27,11 @@ STRATIFY_COLUMNS = ("service_type", "temp_band_ord")
 
 HOLDOUT_FRACTION = 0.2
 
+# The temporal test set (plan §4a): every trip from this instant on — the last
+# 2 of the 24 months — is sealed whole, before the random holdout is drawn.
+TEMPORAL_CUTOFF = pd.Timestamp("2016-11-01")
+TEMPORAL_COLUMN = "pickup_datetime"
+
 # Metric functions — single source for both the CV scorers and any ad-hoc
 # reporting (Phase-5 slice metrics reuse these).
 mae = mean_absolute_error
@@ -89,6 +94,36 @@ def make_holdout(
         stratify=strata,
     )
     return X_train, X_test, y_train, y_test
+
+
+def make_temporal_test(
+    df: pd.DataFrame,
+    cutoff: pd.Timestamp = TEMPORAL_CUTOFF,
+    column: str = TEMPORAL_COLUMN,
+):
+    """Carve the temporal test set off a prep sample (plan §4a).
+
+    Returns (before, temporal): trips that start before `cutoff`, and trips
+    that start at or after it. The random 80/20 holdout lets 2016-06 inform a
+    2016-03 prediction; the temporal set holds out the last two months whole,
+    so Phase 5 can score the champion on trips later than anything it saw.
+    It is sealed like the holdout — scored once, in Phase 5, never here.
+
+    Runs on the **raw** frame, before `build_features`, because that drops
+    `pickup_datetime`. `make_holdout` then draws only from `before`. Index
+    labels are kept, so every row stays traceable to the sample file.
+
+    A frame without the date column raises rather than returning an empty
+    temporal set: the pre-D-012 samples carry no date, and an empty carve
+    would look like a seal while sealing nothing.
+    """
+    if column not in df.columns:
+        raise ValueError(
+            f"no '{column}' column to carve the temporal test set on — the "
+            "sample predates it; regenerate it with 00_prep_spark.py"
+        )
+    is_temporal = df[column] >= cutoff
+    return df.loc[~is_temporal], df.loc[is_temporal]
 
 
 def train_split_filename(
