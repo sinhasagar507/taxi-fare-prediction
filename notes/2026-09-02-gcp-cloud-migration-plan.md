@@ -1057,7 +1057,9 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
 ### M4 — Spark on Dataproc Serverless: smoke, then §5c
 
 - [ ] Look up and grant the Serverless batch's service-account roles (UNVERIFIED in 2.4).
-- [ ] Upload `sample_work_train.parquet` (612,608 rows) to `gs://…/ml/samples/`.
+- [ ] Upload `sample_work_train.parquet` to `gs://…/ml/samples/`. Since the 2026-09-13
+      baseline it holds **1,355,641** rows, not the pre-D-012 612,608, so the smoke's local
+      comparison must be re-run on it — the 2.4 baseline is on voided rows (D-012).
 - [ ] Add a `--input` / `--output` URI pair to `01_mllib_baseline.py` if it does not take
       one (it reads local paths today); test first, in `tests/unit/ml/test_mllib.py`.
 - [ ] Submit `01_mllib_baseline.py` as a batch on runtime 3.0 with
@@ -1086,7 +1088,8 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
 - [ ] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
       nothing exists.
 - **Gate:** smoke run inside fold noise of the local result. Prep compared to **M3's
-  BigQuery numbers**, not the local `prep_stats.json`, which is pre-D-012: raw rows
+  BigQuery numbers**, not the pre-D-012 local `prep_stats.json` (archived 2026-09-13;
+  the tracked file now holds the cloud output): raw rows
   307,339,039 and guarded rows 304,766,876 (yellow 270,075,802, green 34,691,074)
   exactly. Caps inside Q1's exact p98.9–p99.1 band under option A, or equal to Q1's
   exact p99 under option B — "Open anomaly" in `notes/2026-09-06-prep-cloud-baseline.md`.
@@ -1480,8 +1483,11 @@ Each with options and a recommendation. None is taken by this document.
       `prep-m4-20260913-full` read 307,339,039 rows and guarded 304,766,876, both exact to
       M3, in 25.6 min for $0.53. **Green cap anomaly:** measured 2026-09-13, both green
       caps IN BAND, RESOLVED-as-method; the owner chose A (keep the Spark caps) — "Open anomaly"
-      in `notes/2026-09-06-prep-cloud-baseline.md`. Open after it: setting the local
-      baseline from this output, then the smoke.
+      in `notes/2026-09-06-prep-cloud-baseline.md`. **Baseline set 2026-09-13:**
+      `sample_work` (1,828,181 rows) and `prep_stats.json` came down from `ml/prep`, equal
+      to the objects; every cap inside Q1's band; temporal 133,629 / holdout 338,911 /
+      train 1,355,641; pre-D-012 samples archived — Next item 4 of that note. **Next: the
+      smoke.**
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
 - [ ] §5c run scoped per decision 3
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped

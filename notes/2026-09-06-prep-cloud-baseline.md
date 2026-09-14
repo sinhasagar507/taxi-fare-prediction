@@ -14,6 +14,11 @@ models, or any modeling result built on either. **Read this before rebuilding
 > `stg_yellow_taxi_data.sql` and `stg_green_taxi_data.sql`, not a property of
 > the data.** `spark/ml/data/prep_stats.json` therefore still holds the local
 > values, which match the raw source. See "Root cause" below.
+>
+> **Superseded 2026-09-13.** The rejected caps were the 2026-09-06 run on the broken
+> table. After the D-012 rebuild and the re-run, `prep_stats.json` and `sample_work`
+> hold the `prep-m4-20260913-full` output — the baseline, Next item 4. The pre-D-012
+> local files are archived in `../nyc_taxi_migration_backup/prep-pre-d012-local/`.
 
 ---
 
@@ -155,6 +160,7 @@ Everything downstream of `dbt_prod`, because the fact table roughly triples.
 - `spark/ml/data/prep_stats.json` is **kept at the local values** for now. They
   match the raw source to within 0.7%, which is the best number in hand, and they
   describe the samples actually on disk. They are still provisional.
+  **Superseded 2026-09-13:** replaced by the D-012 cloud output; Next item 4.
 - Every modeling result, because `fare_capped` is the target and its cap moves.
 - The sealed holdout partition.
 
@@ -649,9 +655,9 @@ step it already belongs to.
 
 | Item | Rides with | Why there |
 | --- | --- | --- |
-| The samples, 30,482,494 and 1,828,181 rows, exceed modeling plan §8's tiers (~12.8M and ~500K–1M) | Set the baseline | The baseline fixes the sizes, and §8 states the intent |
-| §4a's deferred temporal test set: `pickup_datetime` is now in the samples (`4985c03`), so its blocker is gone | Set the baseline | §4a says "when the prep is next re-run" |
-| The local backup holds pre-D-012 data, and `--source local` is still the default | Set the baseline | Once the baseline comes from the cloud, the local source is stale |
+| The samples, 30,482,494 and 1,828,181 rows, exceed modeling plan §8's tiers (~12.8M and ~500K–1M) | Set the baseline — **done 2026-09-13**: the emitted sizes are kept; §8 records them | The baseline fixes the sizes, and §8 states the intent |
+| §4a's deferred temporal test set: `pickup_datetime` is now in the samples (`4985c03`), so its blocker is gone | Set the baseline — **done 2026-09-13** (`a00311c`): 133,629 rows, 7.31% of `sample_work` | §4a says "when the prep is next re-run" |
+| The local backup holds pre-D-012 data, and `--source local` is still the default | Set the baseline — **done 2026-09-13** (`b4e65e3`): `--source` is required, with no default | Once the baseline comes from the cloud, the local source is stale |
 | `tripid` uniqueness in `fact_trips` is untested — Q2, Q2b, Q2c | §5.3, first step | §5.3's fold key needs a unique row key |
 | The red test's row key (crc32 over features) protects the 0.5202 and 0.4828 baselines, which D-012 voided | §5.3, first step | The deviation's reason is gone once the baseline regenerates the samples |
 | Sample membership may depend on partitioning: `sampleBy` draws `rand`. **UNVERIFIED** on this pipeline | Option B's change, or any prep re-run after the baseline | A re-run would change the holdout. Hash sampling on the row key removes the dependence |
@@ -762,12 +768,30 @@ RULES
      raw to `fact_trips` to 10 yellow rows and 1 green row. $0.4961.
    - [x] **The owner's decision, A or B.** **A, chosen 2026-09-13:** keep the Spark
      caps; no code change, no re-run.
-   - [ ] **Then set the baseline — still open.** The owner's decisions and the
-     BASELINE goal are in "Set the baseline — the owner's decisions and the goal"
-     above. It also settles the sample sizes
-     against modeling plan §8, §4a's temporal test set, and the local source default
-     — see the table under "The detour, and the way back". `spark/ml/data/prep_stats.json`
-     and the samples on disk still describe the pre-M3 local run. Replacing them
-     with the `gs://…/ml/prep` output regenerates the holdout partition, so it is
-     its own step.
-5. [ ] Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.
+   - [x] **Then set the baseline.** **Done 2026-09-13**, by the BASELINE goal in "Set
+     the baseline — the owner's decisions and the goal" above. Measured:
+     - **Archive.** The pre-D-012 `sample_full`, `sample_work`, `sample_work_train` and
+       a copy of `prep_stats.json` moved to `../nyc_taxi_migration_backup/prep-pre-d012-local/`:
+       26 files, 309,398,759 bytes, every SHA-256 equal after the move. Nothing deleted.
+     - **Download.** `sample_work.parquet` (4 objects, 110,474,656 bytes) and
+       `prep_stats.json` (558 bytes) from `gs://primary-data-dtc-506916/ml/prep/`; every
+       file equal to its object in size and CRC32C. `sample_work` holds 1,828,181 rows;
+       `prep_stats.json` reads raw 307,339,039 and guarded 304,766,876. `sample_full`
+       stays in GCS (owner decision 6).
+     - **Caps against Q1's exact band**, all inside: Yellow fare 52.0 (52.00–52.00),
+       Yellow distance 18.5 (18.37–18.76), Green fare 44.5 (44.00–46.50), Green
+       distance 13.9 (13.80–14.60), duration 57.5 (56.6667–59.9000). The capped columns
+       in `sample_work` reach exactly these values.
+     - **Temporal set** (`a00311c`): 133,629 rows from 2016-11-01, 7.31%, carved on the
+       raw frame before `build_features` and `make_holdout`.
+     - **`--source` required** (`b4e65e3`).
+     - **Train split:** `01_run_sweep.py --sample work --baseline --only dummy
+       --write-train --tag baseline_split` → train 1,355,641, holdout 338,911, temporal
+       133,629; the new `sample_work_train.parquet` holds the 1,355,641. No holdout or
+       temporal metric was computed.
+     - **Cost:** $0 on BigQuery and Dataproc — no query, no batch. The GCS download was
+       110,475,214 bytes (105.4 MiB) of egress; its price is **UNVERIFIED** and not added.
+5. [ ] **Next: the M4 smoke** — migration plan M4. Its local comparison target has to
+   be a run on the new 1,355,641-row train split: the 2.4 baseline it names ran on the
+   pre-D-012 612,608 rows, which D-012 voided.
+6. [ ] Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.

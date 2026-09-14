@@ -1,23 +1,26 @@
 {
-  "raw_rows": 128781646,
-  "guarded_rows": 127485074,
-  "sample_full_rows": 12748027,
-  "sample_work_rows": 765761,
+  "raw_rows": 307339039,
+  "guarded_rows": 304766876,
+  "sample_full_rows": 30482494,
+  "sample_work_rows": 1828181,
   "full_frac": 0.1,
   "work_frac": 0.06,
   "seed": 42,
   "caps": {
     "per_service": {
       "Green": {
-        "fare_p99": 45.0,
-        "dist_p99": 14.15
+        "fare_p99": 44.5,
+        "dist_p99": 13.9
       },
       "Yellow": {
         "fare_p99": 52.0,
-        "dist_p99": 18.7
+        "dist_p99": 18.5
       }
     },
-    "duration_p99_min": 57.56666666666667
+    "duration_p99_min": 57.5
   },
-  "limit_files": null
+  "limit_files": null,
+  "source": "dtc-de-project-506916.dbt_prod.fact_trips",
+  "output": "gs://primary-data-dtc-506916/ml/prep",
+  "master": "dataproc"
 }

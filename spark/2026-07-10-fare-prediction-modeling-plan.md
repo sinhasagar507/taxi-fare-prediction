@@ -29,8 +29,8 @@
 spark/ml/
 ├── 00_prep_spark.py            # Spark: fact_trips → cleaned → stratified sample parquet
 ├── data/
-│   ├── sample_full.parquet     # ~10% stratified (~12.8M rows) — final refit
-│   └── sample_work.parquet     # ~500K–1M rows — fast sweep iteration
+│   ├── sample_full.parquet     # 10% stratified (30,482,494 rows since 2026-09-13; stays in GCS) — final refit
+│   └── sample_work.parquet     # 1,828,181 rows since 2026-09-13 — fast sweep iteration
 ├── src/
 │   ├── features.py             # feature engineering (pure fns, unit-tested)
 │   ├── preprocess.py           # ColumnTransformer builders, scaled + tree variants
@@ -106,7 +106,9 @@ validates against all 612K training rows instead of 115K and exposes fold-to-fol
 **Adopted — stratified 80/20 holdout + 5-fold CV inside the 80%:**
 
 - `evaluate.make_holdout(X, y, test_size=0.2)` carves the split **before** the sweep sees
-  the data. On `sample_work`: 612,609 train / 153,152 sealed test.
+  the data. On the D-012 `sample_work` (2026-09-13): **1,355,641 train / 338,911 sealed
+  test**, drawn from the rows before the temporal cutoff below. The pre-D-012 sample gave
+  612,609 / 153,152; D-012 voided it.
 - Stratified on `service_type` × `temp_band_ord` — the same key `00_prep_spark.py`
   sampled with, so the smallest stratum (Green/Freezing, ~1.5%) can't skew.
 - Deterministic under `RANDOM_STATE=42`; the sealed rows are re-derivable from the
@@ -122,7 +124,26 @@ informed by a test score makes the final number optimistic: with 15 models separ
 the largest of 15 noise draws (~$0.005) — the same size as the real gap between the top
 two models. Tune, ablate and compare freely on CV; touch the holdout at the end.
 
-### Deferred — temporal test set (next time the prep runs)
+### Temporal test set — landed 2026-09-13 (was deferred)
+
+**Landed with the baseline, 2026-09-13** (owner decision 3). `evaluate.make_temporal_test`
+carves every trip with `pickup_datetime >= 2016-11-01` off the **raw** sample, before
+`build_features` drops the timestamp and before `make_holdout` draws the 80/20.
+`01_run_sweep.py` seals it by default, never scores or prints it, and records
+`temporal_cutoff` and `temporal_rows` in `results/sweep_<tag>.json` (`a00311c`).
+
+Measured on the D-012 `sample_work`, 1,828,181 rows:
+
+| Set | Rows | Share of the sample |
+| --- | ---: | ---: |
+| Temporal test set (2016-11: 65,459; 2016-12: 68,170) | 133,629 | 7.31% |
+| Random holdout — 20% of the 1,694,552 rows before the cutoff | 338,911 | 18.54% |
+| Train — the sweep's rows, `sample_work_train.parquet` | 1,355,641 | 74.15% |
+
+The share is 7.31%, not the ≈8% estimated below: 2 of 24 months is 8.33%, but the last
+two months hold fewer trips than the 24-month mean of 76,174 per month. The random
+holdout therefore draws from 2015-01 to 2016-10 only. The history below is kept as it
+was written.
 
 The 80/20 above is a **random** split, but the deployment case is predicting a fare for a
 trip happening *now* from a model trained on *past* trips. A random split lets 2016-06
@@ -138,8 +159,10 @@ date to split on.
 When the prep is next re-run:
 
 1. Add `pickup_datetime` (or just a `pickup_month` key) to the `keep` list.
+   **Done** — `4985c03`, in the 2026-09-13 samples.
 2. Carve a second test set: the **last 2 of 24 months (2016-11, 2016-12, ≈8%)**.
-3. Score the Phase-5 champion on **both** test sets and report the pair.
+   **Done 2026-09-13** — 133,629 rows, 7.31%, measured; see above.
+3. Score the Phase-5 champion on **both** test sets and report the pair. **Open — Phase 5.**
    - **Agreement** → the random split was safe, and you can say so with evidence rather
      than assertion.
    - **Divergence** → real temporal drift, quantified.
@@ -424,7 +447,13 @@ probe (`--sample full --only lightgbm`) before committing to a machine size.
 
 ## 8. Cross-cutting principles
 
-1. **Compute tiers:** sweep on `sample_work` (~500K–1M) for fast iteration; refit winner on `sample_full` (~12.8M). Avoids minutes-per-fit × dozens of models.
+1. **Compute tiers:** sweep on `sample_work` for fast iteration; refit winner on `sample_full`. Avoids minutes-per-fit × dozens of models.
+   **Sizes since the 2026-09-13 baseline, measured:** `sample_work` **1,828,181** rows, of
+   which the sweep trains on **1,355,641** (§4a); `sample_full` **30,482,494** rows. The
+   owner kept the emitted sizes rather than re-run or subsample to the original tiers
+   (~500K–1M and ~12.8M), so the local work sweep runs on about 2.2x the old 612,609
+   training rows. `sample_full` stays in GCS — §5c trains in the cloud — so a local
+   `--sample full` run fails until someone fetches it.
 2. **Reproducibility:** fixed `random_state` everywhere; persist samples + fitted preprocessors so the leaderboard is regenerable.
 3. **Leakage-safe by construction:** all preprocessing inside Pipelines fit on train folds only; target encoding cross-fitted.
 4. **Fair comparison:** every model through the one harness, same folds, same metrics.
@@ -608,7 +637,23 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         Spark 4.0.1 on 2026-09-02** and both still hold, so neither is a 4.1-only quirk;
         the explicit `targetType="continuous"` and the demoting `SQLTransformer` stay
         mandatory on the Dataproc Serverless runtime too. See the migration plan 2.4.
-- [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M) for
+- [x] **Baseline set from the D-012 cloud prep — 2026-09-13.** The samples now come from
+      `prep-m4-20260913-full` on the rebuilt `dbt_prod.fact_trips`, not the pre-D-012
+      local backup. `sample_work.parquet` and `prep_stats.json` came down from
+      `gs://primary-data-dtc-506916/ml/prep/`, byte- and CRC32C-equal to the objects.
+      - `prep_stats.json`: raw 307,339,039, guarded 304,766,876, `sample_work` 1,828,181,
+        `sample_full` 30,482,494. Caps: Yellow $52.0 / 18.5 mi, Green $44.5 / 13.9 mi,
+        duration 57.5 min — each inside Q1's exact p98.9–p99.1 band (option A).
+      - Split: temporal 133,629 / holdout 338,911 / train 1,355,641 (§4a). The new
+        `sample_work_train.parquet` holds the 1,355,641. No holdout or temporal metric
+        was computed.
+      - `00_prep_spark.py` now requires `--source` (`b4e65e3`).
+      - The pre-D-012 samples are archived, not deleted, in
+        `../nyc_taxi_migration_backup/prep-pre-d012-local/`: 26 files, 309,398,759 bytes,
+        SHA-256-equal after the move.
+      - Every result in the §5b table and in the rows above is pre-D-012 and does not
+        compare across this line (D-012). Next: the M4 smoke.
+- [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped
       champion + MLlib GBT rather than all 14.
