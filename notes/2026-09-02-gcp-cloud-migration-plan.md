@@ -1479,7 +1479,7 @@ Each with options and a recommendation. None is taken by this document.
       **Prep half done 2026-09-13:** `--cluster` fixed (`24175b0`), then
       `prep-m4-20260913-full` read 307,339,039 rows and guarded 304,766,876, both exact to
       M3, in 25.6 min for $0.53. **Green cap anomaly:** measured 2026-09-13, both green
-      caps IN BAND, RESOLVED-as-method; the owner's A/B decision is open — "Open anomaly"
+      caps IN BAND, RESOLVED-as-method; the owner chose A (keep the Spark caps) — "Open anomaly"
       in `notes/2026-09-06-prep-cloud-baseline.md`. Open after it: setting the local
       baseline from this output, then the smoke.
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b

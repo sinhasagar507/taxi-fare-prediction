@@ -287,8 +287,9 @@ usable.
 
 **Status: RESOLVED-as-method (2026-09-13).** Q1 put both green Spark caps inside
 the exact p98.9–p99.1 band, and Q3 reconciled the raw source to `fact_trips` — see
-"Results" below. **The owner's A/B decision is still open, and it blocks "set the
-baseline" (Next, item 4).** Found in the re-run above and recorded the same day.
+"Results" below. **The owner chose A on 2026-09-13:** keep the Spark caps, with no code
+change and no re-run. The prep is gated on Q1's exact band, not on equality. Found in
+the re-run above and recorded the same day.
 
 On the same rows — `guarded_rows` 304,766,876 in both — yellow agrees and green does not:
 
@@ -582,6 +583,7 @@ The detour inserts one step before an existing one. It adds nothing after it.
 1. **Q1 + Q3**, one analysis, at most about $0.25. **Done 2026-09-13** for $0.4961,
    measured — Q3 overran its estimate; see "Results".
 2. **A or B.** A costs nothing further. B is a test-first change and one re-run.
+   **A, chosen by the owner 2026-09-13.**
 3. **Back on plan:** Next item 4, "set the baseline" → M4 smoke → §5.3 → §5.4 → §5c →
    M5 → M6, as the migration plan's Status list orders them.
 
@@ -656,6 +658,80 @@ step it already belongs to.
 | The duration cap is global in the prep and per-service in M3 | Option B only | Q1 measures both |
 | M4's gate compares against the local `prep_stats.json`, which is pre-D-012 | The migration plan's M4 text | The comparison target is now M3's BigQuery numbers |
 
+## Set the baseline — the owner's decisions and the goal (2026-09-13)
+
+The owner took these decisions on 2026-09-13, after the GREENCAP results and before any
+baseline work. Each one changes what the BASELINE goal below does. The goal is stored
+as the owner accepted it; paste it as written. It is 3,745 characters.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | The green caps: A or B | **A** — keep the Spark caps, no code change, no re-run | Both caps are IN BAND; the effect is at most $0.0006 on the mean target, below the fold spread | The prep is gated on Q1's exact band, not on equality |
+| 2 | Sample sizes: 30,482,494 / 1,828,181 against §8's ~12.8M / ~500K–1M | **Keep the emitted sizes** | No re-run and no cost, consistent with A | §8's tiers change to the measured sizes; the local work sweep runs on about 2.4x the rows |
+| 3 | §4a's temporal test set (2016-11, 2016-12) | **Lands with the baseline** | Landing it later forces a redo of every model trained on those months | The random 80/20 holdout draws from 2015-01 to 2016-10 only |
+| 4 | The `--source` default in `00_prep_spark.py` | **Required, no default** — test first | Nobody reads the pre-D-012 backup, or starts a 300M-row BigQuery read on the laptop, by accident | Every prep run names its source |
+| 5 | The pre-D-012 local samples | **Archive** to `../nyc_taxi_migration_backup/prep-pre-d012-local/`, never delete | Reversible; the old results stay reproducible | `spark/ml/data/` holds only D-012 data |
+| 6 | `sample_full` on the laptop | **Stays in GCS**; only `sample_work` and `prep_stats.json` come down | §5c trains in the cloud; saves 1,751 MiB of disk | A local `--sample full` run fails until someone fetches it |
+
+Options not taken: B (exact caps and a $0.53 re-run); a re-run or a local subsample to
+reach §8's sizes; the temporal set later or never; `--source` defaulting to BigQuery, or
+left as it is; deleting the old samples.
+
+<details><summary>The BASELINE goal command</summary>
+
+```text
+/goal Set the ML baseline from the 2026-09-13 cloud prep output. MET only when the transcript shows a final report headed "BASELINE DONE" with all of:
+(a) archive: the pre-D-012 local files in ../nyc_taxi_migration_backup/prep-pre-d012-local/, bytes equal before and after;
+(b) download: sample_work.parquet + prep_stats.json in spark/ml/data/; objects and bytes equal GCS; 1,828,181 rows; raw 307,339,039, guarded 304,766,876; each cap inside its Q1 band;
+(c) temporal set: failing test shown, then code; rows from 2016-11-01 carved before build_features and make_holdout; the measured share;
+(d) --source required: failing test shown, then code;
+(e) a new sample_work_train.parquet; train, holdout and temporal row counts; no holdout or temporal metric printed;
+(f) docs, measured numbers only (D-009): modeling plan §4a, §8, Status; prep-cloud-baseline Next item 4 and its "rides with" rows; migration plan M4 line, next = the smoke;
+(g) commits: the A-decision notes, each TDD change, then prep_stats.json + docs;
+(h) gate before: 343 passed, 1 skipped; after: 0 failed, only new passes added;
+(i) git status clean; the new commits unpushed.
+Judge IMPOSSIBLE if a line starts "BASELINE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Owner decisions 2026-09-13: A (Spark caps, no re-run); keep emitted sample sizes; temporal set now; --source required; archive, never delete.
+- Read first: notes/2026-09-06-prep-cloud-baseline.md "Results" and "Next"; modeling plan §4a, §8; notes/decisions.md.
+- gs://primary-data-dtc-506916/ml/prep/ on 2026-09-13: sample_work.parquet 4 objects 105.4 MiB; sample_full.parquet 10 objects 1,751.3 MiB; prep_stats.json. Storage client in .venv, GOOGLE_APPLICATION_CREDENTIALS=secrets/gcp-credentials.json.
+- sample_full stays in GCS; §5c trains in the cloud. Local --sample full fails until someone fetches it.
+- Q1 bands: Y fare 52.00-52.00, Y dist 18.37-18.76, G fare 44.00-46.50, G dist 13.80-14.60, all dur 56.6667-59.9000.
+- To archive: sample_full.parquet 272M, sample_work.parquet 16M, sample_work_train.parquet 7.2M; prep_stats.json is tracked, so copy it, then overwrite.
+- build_features drops pickup_datetime, so the carve runs on the raw frame. make_holdout is sklearn train_test_split, seed 42.
+- Train split, no sweep: 01_run_sweep.py --sample work --baseline --only dummy --write-train --tag baseline_split.
+- Gate: .venv/bin/pytest tests/ --ignore=tests/unit/ml/test_oof_encode.py.
+
+STEPS
+1. Gate. Commit the uncommitted A-decision edits to the two notes.
+2. Archive; verify bytes.
+3. Download; verify (b).
+4. TDD the temporal carve in src/evaluate.py; wire it into 01_run_sweep.py; the run meta records the cutoff and rows. Commit.
+5. TDD --source required in 00_prep_spark.py. Commit.
+6. Write the train split; record the counts.
+7. Docs (f). Commit prep_stats.json + docs.
+8. Final gate. Print "BASELINE DONE" with (a)-(i) and the next step: the M4 smoke.
+
+PRINT "BASELINE STOPPED: <reason>" AND END WHEN
+- a GCS object, byte, row or prep_stats count differs from FACTS;
+- a cap is outside its Q1 band;
+- an archived file's bytes differ after the move;
+- the temporal share is 0 or above 20%;
+- a new test passes before its code exists, or the gate shows a new failure;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- spend passes $1, or the same auth or tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No BigQuery queries, no Dataproc, no GCS writes. Delete nothing.
+- Never score or print holdout or temporal-set metrics.
+- Out of scope: the M4 smoke, GCS upload, exact caps, hash sampling, §5.3 and its red test, Q2/Q2c, CASE_STUDY.md (D-005), dbt edits.
+```
+
+</details>
+
 ## Next
 
 1. [x] Fix the two staging models upstream, and the `tripid` surrogate key with them.
@@ -684,9 +760,11 @@ step it already belongs to.
      **Done 2026-09-13, RESOLVED-as-method:** both green Spark caps are IN BAND
      (fare 44.00 ≤ 44.5 ≤ 46.50, distance 13.80 ≤ 13.9 ≤ 14.60), and Q3 reconciles
      raw to `fact_trips` to 10 yellow rows and 1 green row. $0.4961.
-   - [ ] **The owner's decision, A or B** — "Results" under "Open anomaly"
-     recommends A. This is the only detour; it blocks the next line.
-   - [ ] **Then set the baseline — still open.** It also settles the sample sizes
+   - [x] **The owner's decision, A or B.** **A, chosen 2026-09-13:** keep the Spark
+     caps; no code change, no re-run.
+   - [ ] **Then set the baseline — still open.** The owner's decisions and the
+     BASELINE goal are in "Set the baseline — the owner's decisions and the goal"
+     above. It also settles the sample sizes
      against modeling plan §8, §4a's temporal test set, and the local source default
      — see the table under "The detour, and the way back". `spark/ml/data/prep_stats.json`
      and the samples on disk still describe the pre-M3 local run. Replacing them
