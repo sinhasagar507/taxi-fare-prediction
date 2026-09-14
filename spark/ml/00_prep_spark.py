@@ -17,11 +17,12 @@ The backup sits OUTSIDE the working tree (audit item 10, 2026-09-01) — by
 default in the repository's sibling `nyc_taxi_migration_backup/`. Override with
 the `MIGRATION_BACKUP_DIR` environment variable; see `spark/ml/src/paths.py`.
 
-Run (from repo root):
-    .venv/bin/python spark/ml/00_prep_spark.py                 # full 128M pass
-    .venv/bin/python spark/ml/00_prep_spark.py --limit-files 3 # fast dry-run
+Run (from repo root). `--source` is required — every run names what it reads:
+    .venv/bin/python spark/ml/00_prep_spark.py --source local                 # full local pass
+    .venv/bin/python spark/ml/00_prep_spark.py --source local --limit-files 3 # fast dry-run
     MIGRATION_BACKUP_DIR=/Volumes/ext/backup \
-        .venv/bin/python spark/ml/00_prep_spark.py             # backup elsewhere
+        .venv/bin/python spark/ml/00_prep_spark.py --source local             # backup elsewhere
+    ... --source <project>.<dataset>.fact_trips --cluster                     # the cloud prep (M4)
 
 Design notes (see spark/2026-07-04-ml-handoff-context.md and
 spark/2026-07-10-fare-prediction-modeling-plan.md):
@@ -268,7 +269,7 @@ def stratified_sample(df: DataFrame, frac: float, seed: int) -> DataFrame:
     return keyed.stat.sampleBy("_strata", fractions, seed).drop("_strata")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit-files", type=int, default=None,
                     help="read only the first N parquet files (fast dry-run)")
@@ -277,17 +278,24 @@ def main() -> None:
                     help="fraction of the FULL sample taken for the work sample")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--driver-mem", default="6g")
-    ap.add_argument("--source", default=LOCAL_SOURCE,
-                    help=f"'{LOCAL_SOURCE}' for the parquet backup, or a "
-                         "fully-qualified project.dataset.table read through "
-                         "the BigQuery connector")
+    # Required, no default (owner decision 2026-09-13). The local backup holds
+    # pre-D-012 data and the other source is a 300M-row BigQuery read; neither
+    # should start because someone left the flag off.
+    ap.add_argument("--source", required=True,
+                    help=f"'{LOCAL_SOURCE}' for the parquet backup (pre-D-012 "
+                         "data), or a fully-qualified project.dataset.table "
+                         "read through the BigQuery connector")
     ap.add_argument("--output", default=DEFAULT_OUTPUT,
                     help="directory for the two samples and prep_stats.json; "
                          "a local path or a gs:// URI")
     ap.add_argument("--cluster", action="store_true",
                     help="use the Dataproc Serverless master instead of "
                          "local[*] (plan M4)")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     # Refuse a half-recognised source rather than falling through to the local
     # backup and reporting a row count for a table nobody asked for.

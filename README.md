@@ -179,7 +179,8 @@ tests/
 │   ├── ml/                             # fare-model prep/feature/eval unit tests
 │   │   ├── test_features.py
 │   │   ├── test_preprocess.py
-│   │   └── test_evaluate.py
+│   │   ├── test_evaluate.py
+│   │   └── test_prep_cli.py            # guard: a prep run never starts without a named --source
 │   ├── test_credential_decoupling.py   # guard: old keyfile name never re-hardcoded
 │   └── test_docker_runtime.py          # guard: build context, dbt pins, Jupyter exposure
 └── integration/
@@ -218,7 +219,7 @@ docker compose -f docker/dev/docker-compose.yml run --rm dev pytest tests/
 
 # One-off script, interactive shell, dbt
 docker compose -f docker/dev/docker-compose.yml run --rm dev \
-  python spark/ml/00_prep_spark.py --limit-files 3
+  python spark/ml/00_prep_spark.py --source local --limit-files 3
 docker compose -f docker/dev/docker-compose.yml run --rm dev bash
 docker compose -f docker/dev/docker-compose.yml run --rm dev dbt --version
 
