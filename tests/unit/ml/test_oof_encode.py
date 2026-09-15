@@ -4,10 +4,12 @@ specified in migration plan §5.3.
 Why this module exists. Plan §5b established an *effect* and left the
 *mechanism* open. sklearn's TargetEncoder cross-fits inside `fit_transform`;
 Spark's `TargetEncoder.fit` takes the plain per-category mean, so a training
-row's own fare enters its own feature. With 5,373 of 18,668 corridors holding
-exactly one trip, the encoding for those rows IS the label. §5.3 asks for a
-cross-fitted encoding computed outside MLlib and fed in as a plain column, so
-the §5.4 acceptance run can say whether the encoder was the whole story.
+row's own fare enters its own feature. On the D-012 train split (1,355,641
+rows) 5,617 of 21,332 corridors hold exactly one trip (measured 2026-09-15), so
+the encoding for those rows is the label, shrunk only by the smoothing. §5.3
+asks for a cross-fitted encoding computed outside MLlib and fed in as a plain
+column, so the §5.4 acceptance run can say whether the encoder was the whole
+story.
 
 Unlike tests/unit/ml/test_mllib.py, this module DOES build a SparkSession. The
 encoder is k group-by + join passes over DataFrames, not scalar arithmetic, and
@@ -21,19 +23,23 @@ expected number rather than a bound.
 
 Row key, and a deviation from §5.3 item 1 recorded on purpose
 -------------------------------------------------------------
-§5.3 item 1 asks for `F.pmod(F.crc32(F.col(row_key)), k)` over `tripid`, and
-notes that `00_prep_spark.py` drops `tripid`, so the frozen
-`sample_work_train.parquet` carries no stable row key. It resolves that with a
-prep re-run.
+§5.3 item 1 asks for `F.pmod(F.crc32(F.col(row_key)), k)` over `tripid`. The
+D-012 train split, `sample_work_train.parquet`, carries no `tripid`: the prep
+drops it. Adding it means a new split.
 
-This module does not take the re-run. The re-run regenerates the sample and
-therefore the holdout partition, which would break §5.4's own requirement —
-"same rows, same folds as 01_mllib_baseline.py" — and invalidate the 0.5202 and
-0.4828 baselines the acceptance run must compare against. The single stated
-reason for wanting `tripid` is that `monotonically_increasing_id()` is unstable
-across re-materialisation, so a fold bug would be silent. A crc32 over the
-row's own frozen feature columns is equally stable, and meets that reason. The
-stability tests below are what hold it to the claim.
+The owner chose the crc32 over the feature columns instead (migration plan
+§5.4, "Re-based to D-012", decision 1, 2026-09-15). A new split would break
+§5.4's own requirement, "same rows, same folds as 01_mllib_baseline.py", and
+void row 2 (`mllib_gbt@work1355k`, MAE 0.466188) and the M4 smoke that
+reproduced it. The single stated reason for wanting `tripid` is that
+`monotonically_increasing_id()` is unstable across re-materialisation, so a
+fold bug would be silent. A crc32 over the row's own frozen feature columns is
+equally stable, and meets that reason. The stability tests below hold it to the
+claim, and the key-column test pins which columns the key reads.
+
+The feature key is not unique: 11 pairs of rows on the D-012 split share every
+feature value (measured 2026-09-15; the largest group is 2). Rows that share a
+key share a fold, so each is still encoded from the other folds only.
 """
 
 import pytest
@@ -298,6 +304,35 @@ def test_fold_values_stay_inside_the_range(unfolded):
 def test_add_oof_fold_preserves_the_row_count(unfolded):
     """Fold assignment is a `withColumn`, never a join that could fan rows out."""
     assert oof.add_oof_fold(unfolded, k=5).count() == unfolded.count()
+
+
+def test_fold_key_uses_the_feature_columns_only(spark):
+    """Break 6 of the D-012 re-base: the crc32 key's column list is pinned.
+
+    The key hashes the feature columns only. The fare, the outer `_fold`, the
+    encoder's own output and any earlier `oof_fold` stay out of it. Here two
+    frames share every feature value and disagree on all four of those
+    columns, so every row must land in the same fold in both.
+
+    A key that took the fare would move rows between inner folds whenever a
+    fare changed. A key that took the outer `_fold` would give each outer
+    training half a different inner split, and a key that took the output
+    would change the moment the column was written.
+    """
+    rows = [(f"C{i % 5}", float(i), i) for i in range(40)]
+    features = spark.createDataFrame(rows, ["od_corridor", "fare_capped", "passenger_count"])
+    noisy = spark.createDataFrame(
+        [(c, fare * 7.0 + 1.0, p, p % 5, fare * 3.0, (p + 1) % 5) for c, fare, p in rows],
+        ["od_corridor", "fare_capped", "passenger_count", "_fold", "od_corridor_te", "oof_fold"],
+    )
+
+    def as_map(df):
+        return {
+            (r["od_corridor"], r["passenger_count"]): r["oof_fold"]
+            for r in oof.add_oof_fold(df, k=5).select("od_corridor", "passenger_count", "oof_fold").collect()
+        }
+
+    assert as_map(features) == as_map(noisy)
 
 
 # --------------------------------------------------------------------------
