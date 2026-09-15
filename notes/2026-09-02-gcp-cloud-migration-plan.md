@@ -1096,6 +1096,99 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
 - **Rollback:** delete the `ml/` prefix. Serverless leaves nothing behind.
 - **Cost:** ~$0.20 smoke; ~$3 MLlib at scale; < $1 prep (3.2).
 
+#### The smoke — the owner's decisions and the goal (2026-09-14)
+
+The owner accepted these on 2026-09-14, after the baseline and before any smoke work. The
+SMOKE goal below runs every open smoke item in order. It is stored as the owner accepted
+it; paste it as written. It is 3,975 characters.
+
+Measured while the goal was written, 2026-09-14, read-only:
+
+- **An unrecorded cloud run exists.** `m4-parity-20260905b` trained on the pre-D-012
+  612,608-row split. Its MAE, 0.5201744916052814, equals the local 2.4 baseline exactly.
+  Its master was `local[*]` with `default_parallelism` 4, so the driver did all the work,
+  in 2,441.8 s for 12,310.6 DCU-seconds. It tests the stack, not the executors.
+- **The old GCS split would be overwritten.** `ml/samples/sample_work_train.parquet` is the
+  pre-D-012 split: 7,548,053 bytes, CRC32C `N8OPzA==`.
+- **Fold membership can now depend on `default_parallelism`.** The script assigns folds per
+  read partition. The old split was one row group; the new one has 2. `local[8]` gives 8;
+  the cloud value is **UNVERIFIED**.
+- `ml/code/spark_ml_src.zip` (2026-09-05) predates the `--cluster` fix, `24175b0`.
+- Docker Desktop was not running. The host has pyspark 4.1.2; the dev container pins 4.0.1.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | One step at a time, or one goal | **One goal**, all smoke items in order | The steps are sequential, and each depends on the one before | The per-step review is suspended for the goal; its FACTS and stop rules replace it |
+| 2 | What the smoke compares against | **A new local run on the 1,355,641-row split** | The 2.4 baseline ran on 612,608 rows that D-012 voided | One local run first; about 36 min, **estimated** from 989 s × 2.21 |
+| 3 | Where the local run executes | **The dev container**, pyspark 4.0.1 | It matches the cloud runtime (D-011) | Docker Desktop must start first |
+| 4 | The old split in GCS | **Copy it to `ml/samples-pre-d012/`, then upload** | Archive, never delete — the rule the baseline used | Both splits stay in the bucket |
+| 5 | What "inside fold noise" means | **Per metric, \|cloud − local\| mean within the local std** | It is measured by the local run itself, for MAE, RMSE and R² | A FAIL on any one metric fails the gate |
+| 6 | Cloud size and spend | **`maxExecutors=2`; TTL 2x the local elapsed, at most 90 min; cap $1.50** | Driver + 2 executors = 13.92 DCU = $0.84/h; 90 min is about $1.26 | About $0.63 expected, **estimated** |
+| 7 | A gate FAIL | **Record it, commit, stop; never re-run** | A FAIL is a result, and a second batch spends to hide it | The owner decides what comes after a FAIL |
+
+Options not taken: one step at a time; comparing against the voided 2.4 baseline; the
+host `.venv` for the local run; overwriting the old GCS split; a fixed tolerance such as
+$0.002 instead of the measured std; dynamic allocation without a cap.
+
+<details><summary>The SMOKE goal command</summary>
+
+```text
+/goal Run the M4 MLlib smoke on the D-012 train split and record it. MET only when the transcript shows a final report headed "SMOKE DONE" with all of:
+(a) M4 checklist: --input/--output (548bfb1) and roles (prep-m4-20260913-full) ticked; m4-parity-20260905b recorded;
+(b) local run: 1,355,641 rows; mae, rmse, r2 mean and std; spark 4.0.1; master local[8]; default_parallelism; elapsed;
+(c) GCS: the old split copied to ml/samples-pre-d012/, size and crc32c equal; the new split in ml/samples/, 16,406,311 bytes, crc32c 1fvgNQ==;
+(d) code at HEAD in dependencies/m4smoke-<sha>/;
+(e) batch SUCCEEDED; master dataproc; executors used; default_parallelism; rows; metrics with std; DCU-seconds, dollars;
+(f) gate: per metric, |cloud - local| mean vs the local std; PASS only if all three are inside; every difference shown;
+(g) batches list: none running; instances list: empty;
+(h) docs, measured numbers only (D-009): migration plan M4 + Status line; modeling plan Status; next = §5.3;
+(i) commits: this goal's note, then docs; gate 358 passed, 1 skipped before and after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "SMOKE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: migration plan M4; prep-cloud-baseline note, Next; notes/decisions.md.
+- Split: spark/ml/data/sample_work_train.parquet, 1,355,641 rows, 2 row groups, 16,406,311 bytes, crc32c 1fvgNQ==.
+- gs://primary-data-dtc-506916/ml/samples/sample_work_train.parquet is the pre-D-012 split: 7,548,053 bytes, crc32c N8OPzA==.
+- m4-parity-20260905b: local[*], parallelism 4, 612,608 rows, mae equal to local 2.4, 2,441.8 s, 12,310.6 DCU-s; driver only.
+- Config: the script defaults, §5b row 2.
+- Local run: dev container, pyspark 4.0.1 (D-011). Start Docker Desktop. --driver-memory 4g: 0.82 GiB peak at 612,608 rows.
+- default_parallelism fixes the read partitions, so fold membership. local[8] gives 8; the cloud value is UNVERIFIED.
+- Serverless driver and executor: 4 cores, 22.4 GB, 4.64 DCU each. Driver + 2 executors = 13.92 DCU = $0.84/h at $0.06/DCU-h.
+- Zip: spark/ml/src/*.py plus empty __init__.py at each level. ml/code/spark_ml_src.zip predates 24175b0; never use it.
+- Submit: the prep note's command, minus spark.jars.packages. gcloud CLI as saggysimmba@gmail.com; Storage client in .venv, GOOGLE_APPLICATION_CREDENTIALS=secrets/gcp-credentials.json.
+- Gate: .venv/bin/pytest tests/ --ignore=tests/unit/ml/test_oof_encode.py. Last: 358 passed, 1 skipped.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. Local run in the container: 01_mllib_baseline.py --driver-memory 4g --tag mllib_gbt_d012.
+3. Copy the old GCS split to ml/samples-pre-d012/; verify. Upload the new split; verify.
+4. Upload 01_mllib_baseline.py and the zip at HEAD to dependencies/m4smoke-<sha>/.
+5. Submit m4-smoke-<yyyymmdd>: --cluster, --input the GCS split, --output gs://primary-data-dtc-506916/ml/results, --tag mllib_cloud_smoke_d012, maxExecutors=2, --ttl 2x the local elapsed, rounded up to 10 min.
+6. Read the batch meta and usage. Compute (f).
+7. batches list; instances list.
+8. Docs (h) with (a). Commit.
+9. Final gate. Print "SMOKE DONE" with (a)-(i) and the next step: §5.3.
+
+PRINT "SMOKE STOPPED: <reason>" AND END WHEN
+- a row count, byte or crc32c differs from FACTS;
+- the batch fails, its master is not dataproc, or no executor ran a task;
+- 2x the local elapsed passes 90 min;
+- (f) fails: record the numbers in M4 and commit first;
+- spend passes $1.50;
+- the gate shows a new failure;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same auth or tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only to the paths in steps 3-5. Delete nothing. No BigQuery queries. One batch; never re-run it.
+- Never read, score or print the holdout or the temporal set.
+- Out of scope: §5.3, §5c, sample_full, CASE_STUDY.md (D-005), dbt edits, terraform.
+```
+
+</details>
+
 ### M5 — The Airflow VM, and D-006 closed
 
 - [ ] Verify the GCE price for the chosen machine on the Compute Engine page (3.1).
