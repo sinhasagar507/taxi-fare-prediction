@@ -1189,6 +1189,103 @@ RULES
 
 </details>
 
+#### The smoke stopped at the TTL limit, and the CLOUDSMOKE goal (2026-09-15)
+
+The SMOKE goal ran on 2026-09-14 and stopped at its step 5, before the submit. Its own stop
+rule fired: 2x the local elapsed, **98.7 min** (2 × 2,961.4 s), passed the 90-min TTL limit
+of decision 6. **No batch ran; Dataproc spend $0.** What it finished, measured:
+
+- **Gate:** 358 passed, 1 skipped. The goal note was committed as `2ad1a8f`.
+- **Local run**, `01_mllib_baseline.py --driver-memory 4g --tag mllib_gbt_d012` in the dev
+  container: 1,355,641 rows; MAE 0.466188 ± 0.005356, RMSE 1.201377 ± 0.021579,
+  R² 0.984675 ± 0.000561; Spark 4.0.1; master `local[8]`; `default_parallelism` 8;
+  2,961.4 s for the five folds, 3,070 s wall clock; fits of 487.0–554.3 s per fold. The
+  output is in `spark/ml/results/*_mllib_gbt_d012.*`, gitignored.
+- **GCS:** the pre-D-012 split was copied to `ml/samples-pre-d012/sample_work_train.parquet`,
+  7,548,053 bytes, CRC32C `N8OPzA==`, equal to its source. `ml/samples/sample_work_train.parquet`
+  now holds the D-012 split: 16,406,311 bytes, `1fvgNQ==`, 1,355,641 rows, 2 row groups.
+- **Code:** `dependencies/m4smoke-2ad1a8f/01_mllib_baseline.py` (21,461 bytes, `Jmqp2w==`)
+  and `mllib_deps.zip` (20,439 bytes, `rrH9dQ==`), both built from `git show HEAD:` at
+  `2ad1a8f`. The zip holds `spark/ml/src/*.py` and an empty `__init__.py` at each level.
+
+Two statements in the SMOKE record above were wrong, measured 2026-09-14:
+
+- **The dev image carries pyspark 4.1.2, not 4.0.1.** `spark/ml/requirements.txt` pins
+  4.0.1, but `nyc-taxi-dev:latest` was built six weeks earlier, before the D-011 pin. The
+  local run installed 4.0.1 in its one-off container, as the 2.4 parity test did; the image
+  is unchanged. A rebuild would align it.
+- **The local run took 49.4 min, not about 36.** The estimate was 989 s × 2.21; the measured
+  2,961.4 s is 1.35x that. Docker Desktop also restarted the Airflow stack and `mongodb-new`
+  by their restart policies; they ran at about 5% CPU during the run.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | The TTL limit | **100 min**, the goal's own 2x rule rounded up | 2x the measured local elapsed is 98.7 min | Driver + 2 executors at $0.84/h make 100 min at most $1.39 |
+| 2 | The spend cap | **Stays $1.50** | 100 min fits under it | A TTL kill cannot pass the cap |
+| 3 | The local comparison | **No re-run**; the 2026-09-14 run is the reference | Its metrics are deterministic at `local[8]` | The cloud batch is the only new compute |
+| 4 | The uploads | **Reuse them**, verified again before the submit | They are measured and equal to FACTS | The batch is the only GCS writer |
+
+Options not taken: a 90-min TTL, which risks a TTL kill and permits no second batch;
+`maxExecutors=4`, faster but $1.39/h and a `default_parallelism` further from the local 8.
+
+<details><summary>The CLOUDSMOKE goal command</summary>
+
+```text
+/goal Finish the M4 MLlib smoke: one Serverless batch on the D-012 train split, gated against the 2026-09-14 local run, then record it. MET only when the transcript shows a final report headed "CLOUDSMOKE DONE" with all of:
+(a) inputs re-verified: GCS objects and the local result equal FACTS; spark/ml unchanged since 2ad1a8f;
+(b) batch SUCCEEDED; master dataproc; executors used; default_parallelism; 1,355,641 rows; mae, rmse, r2 mean and std; elapsed; DCU-seconds, dollars;
+(c) gate: per metric, |cloud - local| mean vs the local std; PASS only if all three are inside; every difference shown;
+(d) batches list: none running; instances list: empty;
+(e) docs, measured numbers only (D-009): M4 checklist ticked (upload; --input/--output 548bfb1; roles prep-m4-20260913-full; submit); m4-parity-20260905b, the local run and this batch recorded; M4 Status line; modeling plan Status; next = §5.3;
+(f) commits: this goal's note, then docs; gate 358 passed, 1 skipped before and after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "CLOUDSMOKE STOPPED:". Stop after 30 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: migration plan M4; notes/decisions.md.
+- SMOKE stopped 2026-09-14 at step 5: 2x the local elapsed, 98.7 min, passed the 90-min TTL limit. No batch ran.
+- Owner decision 2026-09-15: TTL limit 100 min; spend cap stays $1.50; no local re-run.
+- Local run, spark/ml/results/*_mllib_gbt_d012.*: 1,355,641 rows; mae 0.466188 ± 0.005356; rmse 1.201377 ± 0.021579; r2 0.984675 ± 0.000561; spark 4.0.1; local[8]; default_parallelism 8; 2,961.4 s.
+- gs://primary-data-dtc-506916:
+  ml/samples/sample_work_train.parquet 16,406,311 B, 1fvgNQ==
+  ml/samples-pre-d012/sample_work_train.parquet 7,548,053 B, N8OPzA==
+  dependencies/m4smoke-2ad1a8f/01_mllib_baseline.py 21,461 B, Jmqp2w==
+  dependencies/m4smoke-2ad1a8f/mllib_deps.zip 20,439 B, rrH9dQ==
+  ml/results/ holds no mllib_cloud_smoke_d012 object.
+- m4-parity-20260905b: driver only, local[*], 612,608 rows, 2,441.8 s, 12,310.6 DCU-s.
+- Driver + 2 executors = 13.92 DCU = $0.84/h; 100 min is at most $1.39. Cloud elapsed ~61 min, ESTIMATED.
+- Cloud default_parallelism is UNVERIFIED; it fixes fold membership.
+- No smoke batch exists; no instances.
+- Submit: the prep note's command, minus spark.jars.packages. gcloud as saggysimmba@gmail.com; Storage client in .venv, GOOGLE_APPLICATION_CREDENTIALS=secrets/gcp-credentials.json.
+- Gate: .venv/bin/pytest tests/ --ignore=tests/unit/ml/test_oof_encode.py. Last, 2026-09-15: 358 passed, 1 skipped.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. Verify (a); git diff 2ad1a8f HEAD -- spark/ml is empty.
+3. Submit m4-smoke-<yyyymmdd>: the two m4smoke-2ad1a8f objects, --cluster, --input gs://primary-data-dtc-506916/ml/samples/sample_work_train.parquet, --output gs://primary-data-dtc-506916/ml/results, --tag mllib_cloud_smoke_d012, maxExecutors=2, --ttl=100m.
+4. Wait. Read the run's JSON and leaderboard, the batch usage and the executor evidence. Compute (c).
+5. batches list; instances list.
+6. Docs (e). Commit.
+7. Final gate. Print "CLOUDSMOKE DONE" with (a)-(f) and the next step: §5.3.
+
+PRINT "CLOUDSMOKE STOPPED: <reason>" AND END WHEN
+- a size, crc32c or row count differs from FACTS, or spark/ml changed;
+- the batch fails or hits the TTL, its master is not dataproc, or no executor ran a task;
+- (c) fails: record the numbers in M4 and commit first;
+- spend passes $1.50;
+- the gate shows a new failure;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same auth or tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only by the batch, to ml/results/*mllib_cloud_smoke_d012*. Delete nothing. No BigQuery queries. One batch; never re-run it.
+- Never read, score or print the holdout or the temporal set.
+- Out of scope: §5.3, §5c, sample_full, a local re-run, the dev image, CASE_STUDY.md (D-005), dbt edits, terraform.
+```
+
+</details>
+
 ### M5 — The Airflow VM, and D-006 closed
 
 - [ ] Verify the GCE price for the chosen machine on the Compute Engine page (3.1).
