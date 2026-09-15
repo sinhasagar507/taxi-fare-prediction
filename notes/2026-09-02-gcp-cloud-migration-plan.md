@@ -1405,6 +1405,9 @@ PySpark model is one that cannot use the project's strongest feature.
 
 ### 5.3 The out-of-fold target encoder in PySpark — specification
 
+**Re-based to D-012 on 2026-09-15** — "Re-based to D-012" at the end of §5.4 supersedes the
+612,608-row figures below and adds the tests the wiring needs.
+
 Module `spark/ml/src/oof_encode.py`, one pure function over DataFrames, unit-tested first
 with a local `SparkSession` fixture (these tests will take seconds, not milliseconds; that
 is a known cost — §10 said so — and it is confined to one test module).
@@ -1455,6 +1458,9 @@ upward by leakage because the *test* folds are untouched.
 
 ### 5.4 Acceptance criterion — what would justify the reversal
 
+**Re-based to D-012 on 2026-09-15** — the rows below name the voided 612,608-row split.
+"Re-based to D-012", at the end of this section, gives the current comparison.
+
 Run row 2 again with the OOF column: `mllib_gbt_oof@work612k`, same rows, same folds as
 `01_mllib_baseline.py`, same GBT settings.
 
@@ -1466,6 +1472,111 @@ Run row 2 again with the OOF column: `mllib_gbt_oof@work612k`, same rows, same f
 
 Either way the mechanism question §5b left open gets closed, which is a result the
 write-up needs regardless of the stack decision.
+
+#### Re-based to D-012, and the owner's decisions (2026-09-15)
+
+§5.3 and §5.4 were written on the pre-D-012 612,608-row split. D-012 voided that split and
+both comparison rows. Measured 2026-09-15, read-only:
+
+- **Row 2 exists on the D-012 split.** `mllib_gbt@work1355k`, the M4 smoke's local run:
+  MAE 0.466188 ± 0.005356, RMSE 1.201377 ± 0.021579, R² 0.984675 ± 0.000561, 2,961.4 s.
+  The cloud batch agrees to floating-point precision (M4).
+- **Row 3 does not.** The corridor ablation has no D-012 run, so §5.4 cannot be read
+  until it runs.
+- **`tripid` exists and is unique in `sample_work`** (1,828,181 of 1,828,181 rows), but the
+  train split drops it. The split holds 16 columns, no `tripid`, no `pickup_datetime`, and
+  no nulls.
+- **The feature-crc fold key is sound on this split.** 11 rows share a feature row, and
+  the largest group is 2. Rows that share a key land in one fold, so each is still encoded
+  from the other folds only.
+- **The red test** (`4ce8e2b`, 17 tests) fails at collection, because
+  `spark/ml/src/oof_encode.py` does not exist. Its docstring cites the voided 0.5202 and
+  0.4828.
+
+The red test covers the encoder function. It does not cover the wiring into the outer CV
+loop, and the wiring can break silently in these ways:
+
+| # | Break | Kind | Defence, test first |
+| --- | --- | --- | --- |
+| 1 | One encoding for the whole split, before the outer fold loop: outer-test fares enter the training features | leakage | **Fare-change test:** change only the outer test fold's fares; the train-half and test-fold encodings must not move |
+| 2 | The outer test fold encoded with the fold-exclusion function | train/test mismatch | **Test-fold mapping test:** test-fold values equal `apply_target_encoding(fit_target_encoding(train half))` |
+| 3 | The test fold's fallback mean taken from the whole frame | leakage | The fare-change test |
+| 4 | `split_column_groups` drops `od_corridor_te` and `oof_fold` as unrecognised and keeps `od_corridor` target-encoded, so an "OOF" run trains the old encoder | column | **Stage/column test:** no `TargetEncoder`; `od_corridor_te` in the assembler; raw `od_corridor` and `oof_fold` out |
+| 5 | `model_name` knows only `_nocorr`, so the OOF row takes row 2's label | column | **`_oof` label test**, on a pure helper in `mllib.py` |
+| 6 | The crc32 key's column list is not pinned | fold key | **Key-column test:** the key uses the feature columns only — not the fare, `_fold` or the output |
+
+Two conditions keep the comparison fair: every row runs at Spark 4.0.1 with `--cores 8`
+(`default_parallelism` 8), and `_fold` is assigned and cached before any OOF join. Whether
+4.0.1 and 4.1.2 turn a double into the same string for the key is **UNVERIFIED**; running
+every row at 4.0.1 keeps that question out of the comparison.
+
+Decisions 1–3 were accepted on 2026-09-15. Decisions 4 and 5 come with the OOF goal and
+are accepted when the owner pastes it.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | The inner fold key | **crc32 over the feature columns**, as the red test has it | The train split, row 2 and the smoke stay valid; the key is stable and measured sound | No `tripid` in the train split; no new split |
+| 2 | Tests before the wiring | **The five tests above** (breaks 1 and 3 share one) | The red test covers the function only | Step 4 lands test first |
+| 3 | Where the rows run | **Local, dev container, Spark 4.0.1, `--cores 8`** | Same rows and folds as row 2; D-011 | $0 |
+| 4 | What "materially" means in §5.4 | **More than the fold std** of the compared run | The measure the M4 smoke gate used | A difference inside the std reads as no difference |
+| 5 | How the work runs | **One goal, OOF**, below | The steps are sequential | The per-step review is suspended for the goal |
+
+Options not taken: `tripid` in the train split; one encoding before the outer loop; a fixed
+tolerance for "materially"; the cloud for §5.4.
+
+<details><summary>The OOF goal command</summary>
+
+```text
+/goal Build and wire the §5.3 out-of-fold encoder, then run the §5.4 acceptance on the D-012 split. MET only when the transcript shows a final report headed "OOF DONE" with all of:
+(a) row 3 local: mllib_gbt_nocorr_d012 on 1,355,641 rows; mae, rmse, r2 mean and std; spark 4.0.1; local[8]; default_parallelism 8; elapsed;
+(b) oof_encode.py: the key-column test shown failing, then all of test_oof_encode.py passing; its docstring re-based to D-012;
+(c) wiring: the fare-change leakage, test-fold mapping, stage/column and _oof label tests shown failing, then passing;
+(d) §5.4 run mllib_gbt_oof_d012: same rows, folds and GBT settings; mae, rmse, r2 mean and std; spark 4.0.1; default_parallelism 8; elapsed; [cols] show od_corridor_te, no TargetEncoder;
+(e) §5.4 reading: OOF against row 2 (0.466188) and row 3, each difference against the fold std; the outcome row named;
+(f) docs, measured numbers only (D-009): migration plan §5.4 + Status; modeling plan §5b (a D-012 table) + Status;
+(g) commits: this goal's note, each TDD change, then docs; gate before 358 passed, 1 skipped; after: tests/ without --ignore, 0 failed; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "OOF STOPPED:". Stop after 50 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: migration plan §5.3-§5.4 and its re-base; tests/unit/ml/test_oof_encode.py; notes/decisions.md.
+- Owner decisions 2026-09-15: fold key = crc32 over the feature columns, not tripid; the five added tests; every run Spark 4.0.1, --cores 8; "materially" = more than the fold std; local only, $0.
+- Train split: spark/ml/data/sample_work_train.parquet, 1,355,641 rows, 16 columns, no nulls, 16,406,311 B, crc32c 1fvgNQ==; 11 duplicate feature rows, largest group 2.
+- Row 2 local 2026-09-14: mae 0.466188 ± 0.005356; rmse 1.201377 ± 0.021579; r2 0.984675 ± 0.000561; 2,961.4 s; mean fit 532.8 s.
+- Row 3: ~14 min, ESTIMATED.
+- Red test: 17 tests; API add_oof_fold, oof_target_encode, fit_target_encoding, apply_target_encoding; output od_corridor_te; no module yet.
+- Column trap: split_column_groups drops od_corridor_te and oof_fold as unrecognised and keeps od_corridor target-encoded; model_name knows only _nocorr.
+- Local runs: dev container (image has pyspark 4.1.2): pip install pyspark==4.0.1 first; --driver-memory 4g; start Docker Desktop.
+- Gate: .venv/bin/pytest tests/ --ignore=tests/unit/ml/test_oof_encode.py. Last 2026-09-15: 358 passed, 1 skipped.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. Row 3: 01_mllib_baseline.py --drop-corridor --driver-memory 4g --tag mllib_gbt_nocorr_d012.
+3. TDD: the key-column test red; build spark/ml/src/oof_encode.py until test_oof_encode.py is green; re-base its docstring. Commit.
+4. TDD: the four wiring tests red; add --oof: an OOF encoding per outer train half; the test fold via fit + apply on the train half; no StringIndexer/TargetEncoder on od_corridor; label _oof. Commit.
+5. §5.4: 01_mllib_baseline.py --oof --driver-memory 4g --tag mllib_gbt_oof_d012.
+6. Compute (e). Docs (f). Commit.
+7. Final gate without --ignore. Print "OOF DONE" with (a)-(g) and the next step: the owner's §5.4 decision.
+
+PRINT "OOF STOPPED: <reason>" AND END WHEN
+- a row count, byte or crc32c differs from FACTS;
+- a new test passes before its code exists;
+- after the code, a leakage test fails or a row reads back its own fare;
+- the §5.4 [cols] lines show a TargetEncoder or no od_corridor_te;
+- a local run fails;
+- the gate shows a new failure;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same auth or tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud: no GCS writes, no Dataproc, no BigQuery. Delete nothing.
+- Never read, score or print the holdout or the temporal set.
+- Assign and cache _fold before any OOF join.
+- Out of scope: §5c, sample_full, tripid in the train split, the dev image, a prep re-run, CASE_STUDY.md (D-005), dbt edits, terraform.
+```
+
+</details>
 
 ### 5.5 When PySpark is the right tool for the *model*, and what the owner gives up
 
