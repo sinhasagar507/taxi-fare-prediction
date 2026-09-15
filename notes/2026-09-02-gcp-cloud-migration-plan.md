@@ -1578,6 +1578,66 @@ RULES
 
 </details>
 
+#### The §5.4 result on the D-012 split (2026-09-15)
+
+The OOF goal ran. `spark/ml/src/oof_encode.py` (`8f67d17`) and the `--oof` wiring
+(`36cedd5`) landed test first. The five tests above failed before their code existed,
+and all pass after it. Both leakage tests also fail on two mutants: one encoding before the
+outer loop, and a test-fold fallback mean from the whole frame. The key-column test fails on
+a key that also reads the fare.
+
+All three rows: the 1,355,641-row train split, 5 folds, seed 42, GBT `maxIter=100`
+`maxDepth=5`, smoothing 5, Spark 4.0.1 in the dev container, `local[8]`,
+`default_parallelism` 8. The same seed and parallelism give the same fold membership.
+
+| Row | Run | `od_corridor` | MAE | RMSE | R² | Elapsed |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 2 | `mllib_gbt@work1355k` (2026-09-14) | `TargetEncoder`, not cross-fitted | 0.466188 ± 0.005356 | 1.201377 ± 0.021579 | 0.984675 ± 0.000561 | 2,961.4 s |
+| 3 | `mllib_gbt_nocorr@work1355k` | dropped | **0.453134** ± 0.003220 | **1.138785** ± 0.006900 | **0.986234** ± 0.000206 | 2,055.2 s |
+| OOF | `mllib_gbt_oof@work1355k` | out-of-fold, 5 inner folds | 0.462342 ± 0.000505 | 1.161502 ± 0.011404 | 0.985679 ± 0.000304 | 2,886.7 s |
+
+The OOF run's `[cols]` lines show `od_corridor_te` in the numeric group and an empty
+target-encoded group. Its stages are three `StringIndexer`, three `OneHotEncoder`, a
+`VectorAssembler` and the `GBTRegressor`, with no `TargetEncoder`. The mean fit is 473.8 s,
+and the mean encode is 67.5 s per outer fold.
+
+**The reading, by decision 4** (a difference inside the compared run's fold std is no
+difference):
+
+| Comparison | MAE | RMSE | R² |
+| --- | --- | --- | --- |
+| OOF − row 2 | −0.003846, **inside** row 2's std 0.005356 (0.72×) | −0.039876, outside 0.021579 (1.85×) | +0.001003, outside 0.000561 (1.79×) |
+| OOF − row 3 | +0.009208, outside row 3's std 0.003220 (2.86×) | +0.022716, outside 0.006900 (3.29×) | −0.000555, outside 0.000206 (2.69×) |
+
+- **Outcome row, on MAE as §5.4 states it: "MAE at or above row 2".** The OOF MAE is
+  0.003846 below row 2, inside row 2's fold std, so it reads as equal to row 2. Read that
+  way, the uncross-fitted encoder was not the mechanism.
+- **RMSE and R² disagree.** On both, the OOF row is materially better than row 2 and
+  materially worse than row 3. That is the "between row 2 and row 3" row: the encoder was
+  part of the story.
+- **Every metric agrees on one point:** the corridor stays net-negative in MLlib. Row 3,
+  without the corridor, is materially better than the OOF row on all three metrics. Fold by
+  fold, the OOF MAE is higher than row 3 on all 5 folds, by 0.0045 to 0.0134.
+- Row 2's per-fold values are not recorded, so a paired comparison with row 2 is
+  UNVERIFIED.
+
+**The leakage check on real data.** On outer fold 0 of the train split (host Spark 4.1.2,
+`local[4]`, so the fold membership can differ from the runs), `encode_outer_fold` gave:
+0 of 1,084,270 train-half rows with an encoding equal to the row's own fare; 5,482 rows in
+single-trip corridors, whose encodings span 12.6710 to 12.6886 around the train-half mean
+12.6817; a correlation of −0.0103 between those encodings and the fares, against 1.0000
+for an in-sample encoding of the same rows; no null encodings in either half. The holdout
+and the temporal set were not read.
+
+**Two run notes.** The harness stopped the host `docker compose run` client during the OOF
+run, at low host memory; the container ran on, and `docker logs -f` captured its output to
+the end (`MLLIB BASELINE OK`). The encode time rose to 139.5 s in fold 3 under that memory
+pressure, so the OOF elapsed time is not evidence about cost (D-011). Row 3 took 2,055.2 s
+against the ~14 min the goal estimated.
+
+**Next: the owner's §5.4 decision** — which metric names the outcome row, and so whether D2
+is re-recorded with the new reason or the MLlib arm runs §5c with the OOF column.
+
 ### 5.5 When PySpark is the right tool for the *model*, and what the owner gives up
 
 **Memory is the boundary, not row count as such.**
@@ -1837,7 +1897,15 @@ Each with options and a recommendation. None is taken by this document.
       `sample_work` (1,828,181 rows) and `prep_stats.json` came down from `ml/prep`, equal
       to the objects; every cap inside Q1's band; temporal 133,629 / holdout 338,911 /
       train 1,355,641; pre-D-012 samples archived — Next item 4 of that note.
-- [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
+- [x] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b.
+      **Run 2026-09-15, local, $0.** `oof_encode.py` (`8f67d17`) and `--oof` (`36cedd5`),
+      test first. On the 1,355,641-row D-012 split, Spark 4.0.1, `local[8]`: row 3
+      `mllib_gbt_nocorr@work1355k` MAE 0.453134 ± 0.003220; OOF `mllib_gbt_oof@work1355k`
+      MAE 0.462342 ± 0.000505, RMSE 1.161502 ± 0.011404, R² 0.985679 ± 0.000304; row 2 MAE
+      0.466188 ± 0.005356. On MAE the OOF row is inside row 2's fold std, so the outcome row
+      is "at or above row 2"; RMSE and R² read "between row 2 and row 3". The corridor stays
+      net-negative in MLlib on all three metrics. **Next: the owner's §5.4 decision** — see
+      "The §5.4 result on the D-012 split" in §5.4.
 - [ ] §5c run scoped per decision 3
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped
 - [ ] M6 — documents reconciled; audit items 5, 6, 8 checked off

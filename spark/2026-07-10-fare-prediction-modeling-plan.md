@@ -376,6 +376,39 @@ faster**, and the one preprocessing capability MLlib lacks — a cross-fitted ta
 is worth more than the feature it encodes. §5c is where the scale argument gets made
 instead, and it is the only place the Spark side can win.
 
+### Measured on the D-012 split — 2026-09-15, with the mechanism test
+
+D-012 voided the table above: its 612,608 rows came from the pre-fix build. The rows below
+are on the 1,355,641-row D-012 train split, and they do not compare with the rows above.
+All three: 5 folds, seed 42, GBT `maxIter=100` `maxDepth=5`, smoothing 5, Spark 4.0.1 in
+the dev container, `local[8]`, `default_parallelism` 8, so the fold membership is the same.
+No sklearn row exists on this split yet, and no holdout or temporal metric was computed.
+
+| Row | Model | `od_corridor` | MAE | RMSE | R² | Mean fit |
+|---|---|---|---|---|---|---|
+| 3 | `mllib_gbt_nocorr@work1355k` | dropped | **0.453134** ±0.003220 | **1.138785** ±0.006900 | **0.986234** ±0.000206 | 389.0 s |
+| OOF | `mllib_gbt_oof@work1355k` | cross-fitted out-of-fold, outside MLlib | 0.462342 ±0.000505 | 1.161502 ±0.011404 | 0.985679 ±0.000304 | 473.8 s |
+| 2 | `mllib_gbt@work1355k` | `TargetEncoder`, not cross-fitted | 0.466188 ±0.005356 | 1.201377 ±0.021579 | 0.984675 ±0.000561 | 532.8 s |
+
+**This is the test the 2026-09-01 reading asked for:** a cross-fitted encoding computed
+outside MLlib and fed in as a plain column (migration plan §5.3, `src/oof_encode.py`). A
+training row's encoding now comes from the other inner folds only, and the test fold is
+encoded from the whole train half.
+
+**What it shows**, with "material" meaning more than the compared run's fold std:
+
+- **The corridor is still net-negative in MLlib.** Dropping it beats the cross-fitted
+  encoding on all three metrics, by 2.7x to 3.3x row 3's fold std, and on MAE in all 5 folds.
+  So the uncross-fitted encoder is not the whole story.
+- **On MAE the OOF row equals row 2.** It is 0.003846 below, inside row 2's std of
+  0.005356. Read on MAE, cross-fitting did not help.
+- **On RMSE and R² the OOF row is materially better than row 2** (1.85x and 1.79x row 2's
+  std). Read on those, the encoder was part of the story and MLlib's GBT is the rest.
+- The OOF row's MAE spread is a tenth of row 2's (0.000505 against 0.005356).
+
+The migration plan §5.4 carries the differences, the leakage check on real data, and the
+decision this sets up for the owner: which metric names the §5.4 outcome row.
+
 ---
 
 ## 5c. Full-scale training — deferred to Cloud (decided 2026-08-04)
@@ -664,6 +697,17 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
       - This is the first post-D-012 MLlib row. It does not compare with the pre-D-012
         rows in §5b, and no holdout or temporal metric was computed.
       - Next: §5.3's out-of-fold encoder (migration plan §5.3).
+- [x] **The mechanism test: row 3 and the out-of-fold row on the D-012 split — 2026-09-15.**
+      `src/oof_encode.py` (`8f67d17`) and `01_mllib_baseline.py --oof` (`36cedd5`), test
+      first. Local, dev container, Spark 4.0.1, `local[8]`, the same folds as row 2.
+      - Row 3, `mllib_gbt_nocorr@work1355k`: MAE 0.453134 ± 0.003220, RMSE 1.138785 ±
+        0.006900, R² 0.986234 ± 0.000206, 2,055.2 s.
+      - OOF, `mllib_gbt_oof@work1355k`: MAE 0.462342 ± 0.000505, RMSE 1.161502 ± 0.011404,
+        R² 0.985679 ± 0.000304, 2,886.7 s.
+      - The corridor stays net-negative in MLlib even cross-fitted. On MAE the OOF row is
+        inside row 2's fold std; on RMSE and R² it sits materially between rows 2 and 3.
+        §5b's D-012 table carries the reading.
+      - Next: the owner's §5.4 decision (migration plan §5.4).
 - [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped
