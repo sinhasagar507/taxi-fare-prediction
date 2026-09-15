@@ -653,6 +653,17 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         SHA-256-equal after the move.
       - Every result in the §5b table and in the rows above is pre-D-012 and does not
         compare across this line (D-012). Next: the M4 smoke.
+- [x] **The MLlib baseline on the D-012 split, local and cloud (M4 smoke) — 2026-09-15.**
+      `mllib_gbt@work1355k`: the §5b row 2 configuration (5 folds, seed 42, GBT maxIter=100
+      maxDepth=5, `TargetEncoder` smoothing 5) on the 1,355,641-row train split.
+      - MAE $0.466188 ± 0.005356, RMSE 1.201377 ± 0.021579, R² 0.984675 ± 0.000561.
+      - Local, 2026-09-14: dev container, Spark 4.0.1, `local[8]`, `default_parallelism` 8,
+        2,961.4 s. Cloud, 2026-09-15: Dataproc Serverless batch `m4-smoke-20260915`, master
+        `dataproc`, 2 executors, `default_parallelism` 8, 4,301.8 s, $1.12. The two agree to
+        floating-point precision — the migration plan M4 carries the gate and the costs.
+      - This is the first post-D-012 MLlib row. It does not compare with the pre-D-012
+        rows in §5b, and no holdout or temporal metric was computed.
+      - Next: §5.3's out-of-fold encoder (migration plan §5.3).
 - [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped

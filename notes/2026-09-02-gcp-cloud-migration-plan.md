@@ -1056,16 +1056,57 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
 
 ### M4 — Spark on Dataproc Serverless: smoke, then §5c
 
-- [ ] Look up and grant the Serverless batch's service-account roles (UNVERIFIED in 2.4).
-- [ ] Upload `sample_work_train.parquet` to `gs://…/ml/samples/`. Since the 2026-09-13
-      baseline it holds **1,355,641** rows, not the pre-D-012 612,608, so the smoke's local
-      comparison must be re-run on it — the 2.4 baseline is on voided rows (D-012).
-- [ ] Add a `--input` / `--output` URI pair to `01_mllib_baseline.py` if it does not take
+- [x] Look up and grant the Serverless batch's service-account roles (UNVERIFIED in 2.4).
+      **Verified by use:** `prep-m4-20260913-full` (BigQuery read through the connector,
+      GCS write) and `m4-smoke-20260915` (GCS read and write) both SUCCEEDED as
+      `dataproc-batch@dtc-de-project-506916.iam.gserviceaccount.com`. The role list itself
+      was not read from IAM; the two batches show that the roles suffice.
+- [x] Upload `sample_work_train.parquet` to `gs://…/ml/samples/`. **Done 2026-09-14.** The
+      pre-D-012 object (7,548,053 bytes, CRC32C `N8OPzA==`) was first copied to
+      `ml/samples-pre-d012/`, equal in size and CRC32C. `ml/samples/sample_work_train.parquet`
+      now holds the D-012 split: 16,406,311 bytes, `1fvgNQ==`, 1,355,641 rows.
+- [x] Add a `--input` / `--output` URI pair to `01_mllib_baseline.py` if it does not take
       one (it reads local paths today); test first, in `tests/unit/ml/test_mllib.py`.
-- [ ] Submit `01_mllib_baseline.py` as a batch on runtime 3.0 with
-      `spark.jars.packages=com.google.cloud.spark:spark-4.0-bigquery:0.45.0` (the connector
-      is not exercised by this run; the point is that the coordinate resolves). Compare to
-      the 2.4 baseline exactly as in the local 4.0.1 parity test.
+      **Done 2026-09-04, `548bfb1`.**
+- [x] Submit `01_mllib_baseline.py` as a batch on runtime 3.0. **Done 2026-09-15:
+      `m4-smoke-20260915`, SUCCEEDED.** Submitted without `spark.jars.packages`: the
+      connector coordinate already resolved in `prep-m4-20260913-full`, and this job reads
+      parquet only. Compared to a **new local run on the D-012 split**, not the 2.4
+      baseline, whose 612,608 rows D-012 voided.
+
+      | Run | Where | Master | `default_parallelism` | Rows | MAE | RMSE | R² | Elapsed |
+      | --- | --- | --- | ---: | ---: | --- | --- | --- | ---: |
+      | `mllib_gbt_d012`, 2026-09-14 | dev container, Spark 4.0.1 | `local[8]` | 8 | 1,355,641 | 0.466188 ± 0.005356 | 1.201377 ± 0.021579 | 0.984675 ± 0.000561 | 2,961.4 s |
+      | `mllib_cloud_smoke_d012`, 2026-09-15 | Serverless 3.0, Spark 4.0.1 | `dataproc` | 8 | 1,355,641 | 0.466188 ± 0.005356 | 1.201377 ± 0.021579 | 0.984675 ± 0.000561 | 4,301.8 s |
+
+      - **Gate PASS.** Per metric, \|cloud − local\| mean against the local std: MAE
+        1.110e-16 against 0.005356; RMSE 2.220e-16 against 0.021579; R² 0 against
+        0.000561. The differences are floating-point rounding. Every fold matched to four
+        decimals where both logs were compared (folds 0–3), and the stds agree to the same
+        precision as the means.
+      - **Why they are equal:** the cloud `default_parallelism` is **8, measured**, the same
+        as `local[8]`, so the read partitions and the fold membership agree. The two runs
+        also cross an architecture: aarch64 locally, x86_64 in the cloud, Python 3.12.13
+        against 3.12.12.
+      - **Executors:** 2 registered at 14:14 UTC, on hosts 10.128.0.21 and 10.128.0.22;
+        no executor was lost or removed. With master `dataproc`, the driver runs no task,
+        so every task ran on them. Billed DCU averaged 14.24 while RUNNING, 3.07x a
+        driver-only 4.64.
+      - **Time:** fits of 711.2–766.6 s per fold, 1.37x the local mean fit; 4,301.8 s for
+        the folds, 1.45x local. RUNNING 73.8 min, 74.7 min from submit, under the 100-min
+        TTL (6,000 s).
+      - **Cost:** 63,101.463 DCU-seconds = **$1.05**; shuffle storage 4,601,135 GB-seconds
+        = 1,278.1 GB-hours = **$0.07** at $0.000054795 per GiB-hour; **$1.12** in total,
+        under the $1.50 cap. The batch held 14.4 DCU, not the 13.92 that FACTS assumed, and
+        1,050 GB of shuffle storage.
+      - **Code:** `dependencies/m4smoke-2ad1a8f/`, built from `git show HEAD:` at `2ad1a8f`.
+        Outputs: `ml/results/leaderboard_mllib_cloud_smoke_d012.csv` (225 bytes, `fdEUYg==`)
+        and `sweep_mllib_cloud_smoke_d012.json` (1,222 bytes, `qj0fLQ==`).
+- [x] **`m4-parity-20260905b` recorded** (2026-09-05, unrecorded until 2026-09-14). It ran
+      on the pre-D-012 612,608-row split with master `local[*]` and `default_parallelism`
+      4, so the driver did all the work. MAE 0.5201744916052814, equal to the local 2.4
+      baseline; 2,441.8 s; 12,310.6 DCU-seconds. It tested the stack, not the executors,
+      and D-012 voided its rows.
 - [x] `00_prep_spark.py` reading `dbt_prod.fact_trips` through the connector instead of
       the local backup. **Done 2026-09-13** on the D-012 rebuild, so the target count is
       M3's re-run, not the retired 128,408,323. Batch `prep-m4-20260913-full`,
@@ -1085,9 +1126,11 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
       `spark.master=local` and `MASTER=local`; a job that sets no master gets one
       thread. `--cluster` now names `dataproc`. Three probes, $0.04 together.
 - [ ] §5c MLlib arm on `sample_full` — after §5's encoder work decides *which* MLlib arm.
-- [ ] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
-      nothing exists.
-- **Gate:** smoke run inside fold noise of the local result. Prep compared to **M3's
+- [x] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
+      nothing exists. **Measured 2026-09-15**, after `m4-smoke-20260915`: 0 batches
+      running or pending, 0 instances.
+- **Gate:** smoke run inside fold noise of the local result — **PASS 2026-09-15**, above.
+  Prep compared to **M3's
   BigQuery numbers**, not the pre-D-012 local `prep_stats.json` (archived 2026-09-13;
   the tracked file now holds the cloud output): raw rows
   307,339,039 and guarded rows 304,766,876 (yellow 270,075,802, green 34,691,074)
@@ -1668,7 +1711,13 @@ Each with options and a recommendation. None is taken by this document.
       GiB. Gate: **0 failed, 301 passed, 1 skipped** — unchanged from M2, so this proves no
       regression, not new progress. `dbt_dev` dropped and all 9 DAGs re-paused after.
   </details>
-- [ ] M4 — Serverless smoke inside fold noise; prep from BigQuery matches M3's BigQuery numbers
+- [x] M4 — Serverless smoke inside fold noise; prep from BigQuery matches M3's BigQuery numbers
+      **Complete 2026-09-15.** **Smoke:** `m4-smoke-20260915` SUCCEEDED on the 1,355,641-row
+      D-012 split, master `dataproc`, 2 executors, `default_parallelism` 8. MAE 0.466188 ±
+      0.005356, RMSE 1.201377 ± 0.021579, R² 0.984675 ± 0.000561, equal to the 2026-09-14
+      local `local[8]` run to floating-point precision — gate PASS. 4,301.8 s of folds,
+      73.8 min RUNNING, $1.12 (DCU $1.05 + shuffle $0.07). Gate 358 passed, 1 skipped.
+      The §5c item in M4 stays open on its own Status line below. **Next: §5.3.**
       **Prep half done 2026-09-13:** `--cluster` fixed (`24175b0`), then
       `prep-m4-20260913-full` read 307,339,039 rows and guarded 304,766,876, both exact to
       M3, in 25.6 min for $0.53. **Green cap anomaly:** measured 2026-09-13, both green
@@ -1676,8 +1725,7 @@ Each with options and a recommendation. None is taken by this document.
       in `notes/2026-09-06-prep-cloud-baseline.md`. **Baseline set 2026-09-13:**
       `sample_work` (1,828,181 rows) and `prep_stats.json` came down from `ml/prep`, equal
       to the objects; every cap inside Q1's band; temporal 133,629 / holdout 338,911 /
-      train 1,355,641; pre-D-012 samples archived — Next item 4 of that note. **Next: the
-      smoke.**
+      train 1,355,641; pre-D-012 samples archived — Next item 4 of that note.
 - [ ] §5.3 OOF encoder (TDD) and §5.4 acceptance run — result recorded in the modeling plan §5b
 - [ ] §5c run scoped per decision 3
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped

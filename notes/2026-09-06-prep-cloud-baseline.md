@@ -791,7 +791,9 @@ RULES
        temporal metric was computed.
      - **Cost:** $0 on BigQuery and Dataproc — no query, no batch. The GCS download was
        110,475,214 bytes (105.4 MiB) of egress; its price is **UNVERIFIED** and not added.
-5. [ ] **Next: the M4 smoke** — migration plan M4. Its local comparison target has to
+5. [x] **The M4 smoke** — migration plan M4. Its local comparison target has to
    be a run on the new 1,355,641-row train split: the 2.4 baseline it names ran on the
-   pre-D-012 612,608 rows, which D-012 voided.
-6. [ ] Then §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.
+   pre-D-012 612,608 rows, which D-012 voided. **Done 2026-09-15:** a local run on that
+   split and `m4-smoke-20260915` agree to floating-point precision, MAE 0.466188 ±
+   0.005356; gate PASS, $1.12. Full record in migration plan M4.
+6. [ ] **Next:** §5.3's out-of-fold encoder, which needs a `tripid` that is actually unique.
