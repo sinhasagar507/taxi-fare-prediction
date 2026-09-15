@@ -1638,6 +1638,84 @@ against the ~14 min the goal estimated.
 **Next: the owner's §5.4 decision** — which metric names the outcome row, and so whether D2
 is re-recorded with the new reason or the MLlib arm runs §5c with the OOF column.
 
+#### The owner's §5.4 decisions and the SWEEP goal (2026-09-15)
+
+Three findings, measured 2026-09-15 before the decisions:
+
+- **§5c's model list is voided.** Its "top 4 by RMSE" comes from `sweep_work.json`, on the
+  612,608 pre-D-012 rows. No sklearn sweep exists on the D-012 split, so row 1 of the stack
+  comparison is missing too.
+- **The container carve equals the saved split in rows and order, not to the last bit.**
+  The host carve equals `sample_work_train.parquet` row for row. The dev container carves
+  the same 1,355,641 rows in the same order; only `pickup_hour_sin` and `pickup_hour_cos`
+  differ, by at most 5.55e-17 (numpy 2.4.6 in the container, 2.3.2 on the host).
+- **`sample_full` is in the bucket only**, at 30,482,494 rows — 2.4x the 12.75M rows §5c's
+  sizing assumed. §5c needs re-scoping after the sweep.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | Which metric names the §5.4 outcome row | **MAE, as §5.4 states** | §5.4's table is written on MAE; decision 4 reads a difference inside the fold std as none | Outcome "at or above row 2": the encoder was not the mechanism. D2 stands, re-recorded with the new reason. The §5c MLlib arm is row 3's configuration (corridor dropped), the best measured MLlib row on all three metrics |
+| 2 | Which models the D-012 sklearn sweep runs | **All 14** | §5c's "top 4" reads the whole ranking, and the ranking is voided | ~66 min ESTIMATED; stacking UNVERIFIED |
+| 3 | The Airflow stack during the sweep | **Stop it, start it after** | It holds ~3.5 GiB of the Docker VM's 11.67 GiB; the OOF run's client was stopped at low host memory | Reversible; nothing deleted |
+| 4 | Where the §5.4 outcome is recorded | **D-013 in `notes/decisions.md`**, in the SWEEP goal | Open decision 4 asks for a successor to D2 | The docs commit adds the entry |
+
+Options not taken: RMSE and R² as the §5.4 metric (the "between" row, with the OOF column
+in §5c); deferring the §5.4 choice until row 1 exists; the old top 6 only; lightgbm only;
+leaving the Airflow stack running; recording the decision in the notes only.
+
+<details><summary>The SWEEP goal command</summary>
+
+```text
+/goal Re-run the Phase-4 sklearn sweep on the D-012 split, record the §5.4 decision as D-013, and re-derive §5c's model list. MET only when the transcript shows a final report headed "SWEEP DONE" with all of:
+(a) sweep work_d012: 14 models; [split] temporal 133,629, holdout 338,911 SEALED, train 1,355,641; per model mae, rmse, r2 mean and std, fit_time_s; python, numpy, sklearn, lightgbm, xgboost, catboost versions; elapsed;
+(b) row 1 (lightgbm) against row 2 (0.466188) and row 3 (0.453134): each MAE difference against the fold std; the accuracy and s/fold ratios;
+(c) the new top 4 by RMSE, against the voided list lightgbm, catboost, stacking, extra_trees;
+(d) D-013 in notes/decisions.md: the §5.4 outcome on MAE, "at or above row 2", with Decision, Why, Reopen-if, Status;
+(e) docs, measured numbers only (D-009): modeling plan §5b D-012 table + row 1, §5c scope, Status; migration plan Status;
+(f) commits: this goal's note, then D-013 + docs; gate before and after 385 passed, 1 skipped; git status clean; unpushed; the Airflow stack running again.
+Judge IMPOSSIBLE if a line starts "SWEEP STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: migration plan §5.4 "The §5.4 result on the D-012 split"; modeling plan §5, §5b, §5c; notes/decisions.md.
+- Owner decisions 2026-09-15: §5.4 is read on MAE, outcome "at or above row 2"; D2 stands; the §5c MLlib arm is row 3's configuration; all 14 models; stop the Airflow stack for the sweep, start it after; D-013 in this goal.
+- sample_work.parquet: 1,828,181 rows; part-00000 55,157,841 B crc32c xRpTjg==; part-00001 55,316,815 B r4pp0Q==.
+- Container carve, measured 2026-09-15: the same 1,355,641 rows in the same order as sample_work_train.parquet; pickup_hour_sin/cos differ by at most 5.55e-17 (numpy 2.4.6 vs host 2.3.2).
+- Container: python 3.12.13, pandas 2.3.1, numpy 2.4.6, sklearn 1.7.1, lightgbm 4.7.0, xgboost 3.3.0, catboost 1.2.10; 11 CPUs, 11 GiB.
+- Row 2 mllib_gbt@work1355k: mae 0.466188 ± 0.005356, rmse 1.201377 ± 0.021579, mean fit 532.8 s. Row 3: mae 0.453134 ± 0.003220. OOF: mae 0.462342 ± 0.000505.
+- Time: ~66 min, ESTIMATED linear from sweep_work (1,805.9 s at 612,608 rows); stacking ~32 min of it, UNVERIFIED.
+- The default tag "work" overwrites the voided sweep_work.json; use --tag work_d012.
+- Airflow: 6 services running (airflow/docker-compose.yaml).
+- Gate: .venv/bin/pytest tests/. Last 2026-09-15: 385 passed, 1 skipped.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. docker compose -f airflow/docker-compose.yaml stop.
+3. Dev container: python spark/ml/01_run_sweep.py --tag work_d012 > log; capture with docker logs -f if the client stops.
+4. docker compose -f airflow/docker-compose.yaml start; ps shows 6 running.
+5. Compute (b) and (c).
+6. D-013 and docs (e). Commit.
+7. Final gate. Print "SWEEP DONE" with (a)-(f) and the next step: re-scope §5c for the 30,482,494-row sample_full.
+
+PRINT "SWEEP STOPPED: <reason>" AND END WHEN
+- a row count, byte or crc32c differs from FACTS;
+- the sweep lists fewer than 14 models;
+- the sweep fails or the container is killed;
+- any holdout or temporal metric is printed;
+- the gate shows a new failure;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud at all. Delete nothing. Never --write-train.
+- Never read, score or print the holdout or the temporal set.
+- No code changes; if one seems needed, stop and say why.
+- Out of scope: §5c runs, sample_full, MLlib runs, the dev image, CASE_STUDY.md (D-005), dbt edits, terraform.
+```
+
+</details>
+
 ### 5.5 When PySpark is the right tool for the *model*, and what the owner gives up
 
 **Memory is the boundary, not row count as such.**
