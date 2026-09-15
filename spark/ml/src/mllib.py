@@ -53,6 +53,13 @@ MLLIB_EXCLUDED_COLUMNS: tuple[str, ...] = ()
 # the §5b parity rule, and it is the whole basis of the comparison.
 MLLIB_TARGET_ENCODED_COLUMNS = tuple(TARGET_ENCODED_COLUMNS)
 
+# The out-of-fold path (migration plan §5.3, `oof_encode.py`) encodes each
+# target-encoded column outside MLlib into `<column>_te`, a plain double the
+# assembler takes as a number. The inner fold column it assigns on the way
+# never reaches the model.
+MLLIB_OOF_ENCODED_COLUMNS = tuple(f"{c}_te" for c in MLLIB_TARGET_ENCODED_COLUMNS)
+OOF_FOLD_COLUMN = "oof_fold"
+
 # The low-cardinality categoricals MLlib can afford to one-hot: the Phase-2
 # categorical list minus the target-encoded corridor. Derived from
 # features.CATEGORICAL_COLUMNS so the two cannot drift apart.
@@ -224,8 +231,44 @@ def write_text(spark, uri, text: str) -> None:
         stream.close()
 
 
+def _corridor_variant(drop_corridor: bool, oof: bool, drop_name: str) -> str:
+    """"_nocorr", "_oof" or "": the one place the two corridor flags meet."""
+    if drop_corridor and oof:
+        raise ValueError(
+            f"{drop_name} and oof cannot both be set — one removes the corridor, "
+            "the other encodes it"
+        )
+    return "_nocorr" if drop_corridor else "_oof" if oof else ""
+
+
+def model_name(
+    input_uri: str, n_rows: int, drop_corridor: bool = False, oof: bool = False
+) -> str:
+    """Leaderboard label carrying the pool it was trained on.
+
+    The row shares `evaluate()`'s key set so it sorts into the one leaderboard
+    beside sklearn rows — which means there is no column to record the sample
+    in. Per §5b the pool goes in the model string instead: adding a field would
+    break the shared-leaderboard contract. Rows are stamped from the actual row
+    count, so a `--limit-rows` smoke run cannot pass itself off as the real one.
+
+    Rows 2 and 3 of §5b and the §5.4 OOF row differ only in how the corridor
+    reaches the model, so the name separates them. The unqualified `mllib_gbt`
+    is the full-feature baseline with Spark's TargetEncoder; the ablation
+    carries `_nocorr`; the out-of-fold encoding carries `_oof`. The 2026-08-08
+    board claimed the unqualified name for what is now the ablation, and was
+    renamed when row 2 landed.
+    """
+    variant = _corridor_variant(drop_corridor, oof, "drop_corridor")
+    # `uri_stem`, not `Path.stem`: the same file read from GCS and from disk
+    # has to produce the same label, or one input lands in the leaderboard
+    # twice under two names.
+    stem = uri_stem(input_uri).removeprefix("sample_").removesuffix("_train")
+    return f"mllib_gbt{variant}@{stem}{n_rows // 1000}k"
+
+
 def split_column_groups(
-    columns, drop_target_encoded: bool = False
+    columns, drop_target_encoded: bool = False, oof_encoded: bool = False
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Split a feature frame's columns into (categorical, target_encoded, numeric, unrecognised).
 
@@ -253,19 +296,31 @@ def split_column_groups(
     warning that fires on every ordinary run is one people stop reading.
     Likewise a deliberately ablated corridor is not called unrecognised: that
     drop is a documented §5b result, not a surprise.
+
+    `oof_encoded=True` is the §5.4 run. The corridor arrives already encoded
+    out-of-fold as `od_corridor_te`, which goes in `numeric`, so the pipeline
+    builds no StringIndexer and no TargetEncoder for it. The raw `od_corridor`
+    and the inner `oof_fold` are known and deliberately unused. Without this
+    flag both new columns read as unrecognised and the raw corridor stays
+    target-encoded — an "OOF" run that trains the old encoder.
     """
+    _corridor_variant(drop_target_encoded, oof_encoded, "drop_target_encoded")
     kept = [c for c in columns if c not in MLLIB_EXCLUDED_COLUMNS]
     categorical = sorted(c for c in kept if c in MLLIB_CATEGORICAL_COLUMNS)
     target_encoded = (
         []
-        if drop_target_encoded
+        if drop_target_encoded or oof_encoded
         else sorted(c for c in kept if c in MLLIB_TARGET_ENCODED_COLUMNS)
     )
-    numeric = sorted(c for c in kept if c in MLLIB_NUMERIC_COLUMNS)
+    numeric_allowed = set(MLLIB_NUMERIC_COLUMNS) | (
+        set(MLLIB_OOF_ENCODED_COLUMNS) if oof_encoded else set()
+    )
+    numeric = sorted(c for c in kept if c in numeric_allowed)
     known = (
         set(MLLIB_CATEGORICAL_COLUMNS)
         | set(MLLIB_TARGET_ENCODED_COLUMNS)
-        | set(MLLIB_NUMERIC_COLUMNS)
+        | numeric_allowed
+        | ({OOF_FOLD_COLUMN} if oof_encoded else set())
     )
     unrecognised = sorted(c for c in kept if c not in known)
     return categorical, target_encoded, numeric, unrecognised

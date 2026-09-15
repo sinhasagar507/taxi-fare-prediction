@@ -149,6 +149,53 @@ class TestColumnGroups:
     def test_empty_column_list_gives_four_empty_groups(self):
         assert mllib.split_column_groups([]) == ([], [], [], [])
 
+    def test_oof_and_the_ablation_together_are_refused(self):
+        """`--oof` encodes the corridor and `--drop-corridor` removes it. Both at
+        once has no meaning, and silently taking either would mislabel the run."""
+        with pytest.raises(ValueError, match="drop_target_encoded"):
+            mllib.split_column_groups(
+                WORK_FEATURES, drop_target_encoded=True, oof_encoded=True
+            )
+
+
+# ---------------------------------------------------------------------------
+# The leaderboard label — the pool, and which corridor variant ran
+# ---------------------------------------------------------------------------
+
+class TestModelName:
+    """Break 5 of the D-012 re-base (migration plan §5.4).
+
+    The label is the only field that tells rows 2, 3 and the §5.4 OOF row apart
+    in the shared leaderboard. A `model_name` that knows only `_nocorr` gives
+    the OOF row row 2's label, and the §5.4 comparison then reads one row
+    against itself.
+    """
+
+    INPUT = "spark/ml/data/sample_work_train.parquet"
+    ROWS = 1_355_641
+
+    def test_oof_run_is_labelled_oof(self):
+        assert mllib.model_name(self.INPUT, self.ROWS, oof=True) == "mllib_gbt_oof@work1355k"
+
+    def test_ablation_is_labelled_nocorr(self):
+        assert (
+            mllib.model_name(self.INPUT, self.ROWS, drop_corridor=True)
+            == "mllib_gbt_nocorr@work1355k"
+        )
+
+    def test_baseline_label_is_unqualified(self):
+        """Row 2's label, `mllib_gbt@work1355k`, is on the board already."""
+        assert mllib.model_name(self.INPUT, self.ROWS) == "mllib_gbt@work1355k"
+
+    def test_bucket_and_local_inputs_share_one_label(self):
+        assert mllib.model_name(
+            "gs://b/ml/samples/sample_work_train.parquet", self.ROWS, oof=True
+        ) == mllib.model_name(self.INPUT, self.ROWS, oof=True)
+
+    def test_oof_and_the_ablation_together_are_refused(self):
+        with pytest.raises(ValueError, match="drop_corridor"):
+            mllib.model_name(self.INPUT, self.ROWS, drop_corridor=True, oof=True)
+
 
 # ---------------------------------------------------------------------------
 # Unrecognised columns — the allowlist, and saying what it dropped

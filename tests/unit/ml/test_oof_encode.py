@@ -42,16 +42,44 @@ feature value (measured 2026-09-15; the largest group is 2). Rows that share a
 key share a fold, so each is still encoded from the other folds only.
 """
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 pyspark = pytest.importorskip("pyspark", reason="oof_encode is a PySpark module")
 
-from pyspark.sql import SparkSession
+from pyspark.ml.feature import StringIndexer, TargetEncoder, VectorAssembler
+from pyspark.sql import SparkSession, functions as F
 
+from spark.ml.src import mllib
 from spark.ml.src import oof_encode as oof
 
 
 SMOOTHING = 5.0
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BASELINE_PATH = REPO_ROOT / "spark" / "ml" / "01_mllib_baseline.py"
+
+# The 15 feature columns of the D-012 train split, in file order (measured
+# 2026-09-15 from spark/ml/data/sample_work_train.parquet).
+TRAIN_SPLIT_FEATURES = [
+    "distance_capped",
+    "trip_duration_min",
+    "passenger_count",
+    "pickup_dow",
+    "service_type",
+    "pickup_borough",
+    "dropoff_borough",
+    "is_airport_trip",
+    "humidity",
+    "windSpeed",
+    "visibility",
+    "pickup_hour_sin",
+    "pickup_hour_cos",
+    "temp_band_ord",
+    "od_corridor",
+]
 
 
 @pytest.fixture(scope="module")
@@ -359,3 +387,108 @@ def test_oof_encode_keeps_the_original_columns(worst_case):
     --drop-corridor ablation and the audit path both still read it."""
     out = oof.oof_target_encode(worst_case, k=4, smoothing=SMOOTHING)
     assert set(worst_case.columns).issubset(set(out.columns))
+
+
+# --------------------------------------------------------------------------
+# Wiring into the outer CV loop of 01_mllib_baseline.py. Breaks 1-4 of the
+# D-012 re-base (migration plan §5.4). The encoder above can be right and the
+# run still wrong: these tests pin how each outer fold uses it.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def outer_frame(spark):
+    """30 rows over 3 outer folds, the way the script's `_fold` holds them.
+
+    Corridor Z sits in outer fold 0 only, so when fold 0 is the test fold its
+    Z rows take the unseen-key fallback. `rid` identifies a row across frames.
+    """
+    rows = []
+    for i in range(30):
+        outer = i % 3
+        corridor = "Z" if (outer == 0 and i % 2 == 0) else f"C{i % 4}"
+        rows.append((i, corridor, float(10 + (i * 7) % 23), outer))
+    return spark.createDataFrame(rows, ["rid", "od_corridor", "fare_capped", "_fold"])
+
+
+def by_rid(df):
+    return {r["rid"]: r["od_corridor_te"] for r in df.select("rid", "od_corridor_te").collect()}
+
+
+def test_outer_test_fold_fares_do_not_move_any_encoding(outer_frame):
+    """Breaks 1 and 3: the outer test fold's fares must reach no encoding.
+
+    Only the outer test fold's fares change here. The train half is encoded
+    from the train half, and the test fold from the train half's means and
+    global mean, so neither may move. One encoding over the whole split before
+    the outer loop moves the train half; a test-fold fallback mean taken from
+    the whole frame moves the Z rows.
+    """
+    base_train, base_test = oof.encode_outer_fold(outer_frame, fold=0, k=3, smoothing=SMOOTHING)
+    changed = outer_frame.withColumn(
+        "fare_capped",
+        F.when(F.col("_fold") == 0, F.col("fare_capped") + 100.0).otherwise(F.col("fare_capped")),
+    )
+    new_train, new_test = oof.encode_outer_fold(changed, fold=0, k=3, smoothing=SMOOTHING)
+
+    assert len(by_rid(base_train)) == 20 and len(by_rid(base_test)) == 10
+    assert by_rid(new_train) == pytest.approx(by_rid(base_train))
+    assert by_rid(new_test) == pytest.approx(by_rid(base_test))
+
+
+def test_test_fold_is_encoded_by_the_whole_train_half(outer_frame):
+    """Break 2: the test fold takes `fit` on the whole train half, then `apply`.
+
+    The fold-exclusion function is a training-half device. On the test fold it
+    would encode each row from a different subset of the train half, and the
+    feature would disagree with the one the model was fitted on. Corridor Z is
+    absent from the train half, so its rows must read the train half's mean.
+    """
+    _, test = oof.encode_outer_fold(outer_frame, fold=0, k=3, smoothing=SMOOTHING)
+
+    train_half = outer_frame.filter(F.col("_fold") != 0).drop("_fold")
+    test_half = outer_frame.filter(F.col("_fold") == 0).drop("_fold")
+    expected = oof.apply_target_encoding(
+        test_half, oof.fit_target_encoding(train_half, smoothing=SMOOTHING)
+    )
+    assert by_rid(test) == pytest.approx(by_rid(expected))
+
+    train_fares = [r["fare_capped"] for r in train_half.collect()]
+    z_rows = {r["rid"] for r in test_half.filter(F.col("od_corridor") == "Z").collect()}
+    got = by_rid(test)
+    assert z_rows
+    assert all(got[rid] == pytest.approx(sum(train_fares) / len(train_fares)) for rid in z_rows)
+
+
+def _load_baseline():
+    """Import `01_mllib_baseline.py` by path — the leading digit blocks `import`."""
+    spec = importlib.util.spec_from_file_location("mllib_baseline", BASELINE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_oof_pipeline_assembles_the_oof_column_with_no_target_encoder(spark):
+    """Break 4: an "OOF" run must not train the old encoder.
+
+    Without an OOF mode, `split_column_groups` drops `od_corridor_te` and
+    `oof_fold` as unrecognised and keeps `od_corridor` target-encoded, so the
+    pipeline would fit Spark's TargetEncoder and the run would repeat row 2.
+    In OOF mode the pipeline has no TargetEncoder, no StringIndexer on
+    `od_corridor`, and assembles `od_corridor_te` as a plain number. The raw
+    corridor and the inner fold stay out of the assembler.
+    """
+    baseline = _load_baseline()
+    columns = [*TRAIN_SPLIT_FEATURES, "od_corridor_te", "oof_fold"]
+    categorical, target_encoded, numeric, unrecognised = mllib.split_column_groups(
+        columns, oof_encoded=True
+    )
+    stages = baseline.build_pipeline(
+        categorical, target_encoded, numeric, max_iter=5, max_depth=3, smoothing=SMOOTHING
+    ).getStages()
+
+    assert not any(isinstance(s, TargetEncoder) for s in stages)
+    assert "od_corridor" not in {s.getInputCol() for s in stages if isinstance(s, StringIndexer)}
+    assembled = next(s for s in stages if isinstance(s, VectorAssembler)).getInputCols()
+    assert "od_corridor_te" in assembled
+    assert "od_corridor" not in assembled and "oof_fold" not in assembled
+    assert unrecognised == []

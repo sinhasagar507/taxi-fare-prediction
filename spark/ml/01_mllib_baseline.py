@@ -31,6 +31,9 @@ Run (from repo root):
     .venv/bin/python spark/ml/01_mllib_baseline.py --drop-corridor \
         --tag mllib_gbt_nocorr
 
+    # §5.4: the corridor encoded out-of-fold, outside MLlib (src/oof_encode.py)
+    .venv/bin/python spark/ml/01_mllib_baseline.py --oof --tag mllib_gbt_oof
+
 Run (Dataproc Serverless, migration plan M4):
 
     gcloud dataproc batches submit pyspark spark/ml/01_mllib_baseline.py -- \
@@ -58,6 +61,11 @@ Design notes:
   - Spark's `TargetEncoder` does **not** cross-fit, so a training row's own fare
     enters its own feature. `--smoothing` is the only lever against that; the
     default and the arithmetic behind it live in `src/mllib.py`.
+  - `--oof` replaces that encoder for migration plan §5.4. Each outer fold
+    encodes its train half out-of-fold over 5 inner folds and its test fold
+    from the whole train half (`src/oof_encode.encode_outer_fold`). The
+    pipeline then has no StringIndexer or TargetEncoder on `od_corridor` and
+    assembles `od_corridor_te` as a number. Same rows, folds and GBT settings.
   - Folds are k random groups at a fixed seed. They are NOT the sweep's folds:
     sklearn's `KFold(seed=42)` and anything Spark does at `seed=42` partition
     differently, because seeds do not cross library boundaries. Same k, same
@@ -102,11 +110,17 @@ from spark.ml.src.mllib import (  # noqa: E402
     is_local_master,
     is_remote_uri,
     join_uri,
+    model_name,
     self_leakage_weight,
     spark_master,
     split_column_groups,
-    uri_stem,
     write_text,
+)
+from spark.ml.src.oof_encode import (  # noqa: E402
+    DEFAULT_K as OOF_INNER_FOLDS,
+    ENCODED_COL as OOF_ENCODED_COL,
+    OUTER_FOLD_COL,
+    encode_outer_fold,
 )
 
 DATA_DIR = REPO_ROOT / "spark" / "ml" / "data"
@@ -118,29 +132,8 @@ RESULTS_DIR = REPO_ROOT / "spark" / "ml" / "results"
 DEFAULT_INPUT = str(DATA_DIR / "sample_work_train.parquet")
 DEFAULT_OUTPUT = str(RESULTS_DIR)
 
-FOLD_COL = "_fold"
-
-
-def model_name(input_uri: str, n_rows: int, drop_corridor: bool = False) -> str:
-    """Leaderboard label carrying the pool it was trained on.
-
-    The row shares `evaluate()`'s key set so it sorts into the one leaderboard
-    beside sklearn rows — which means there is no column to record the sample
-    in. Per §5b the pool goes in the model string instead: adding a field would
-    break the shared-leaderboard contract. Rows are stamped from the actual row
-    count, so a `--limit-rows` smoke run cannot pass itself off as the real one.
-
-    Rows 2 and 3 of §5b differ only by a feature, so the name has to separate
-    them too. The unqualified `mllib_gbt` means the full-feature baseline; the
-    ablation carries `_nocorr`. The 2026-08-08 board claimed the unqualified
-    name for what is now the ablation, and was renamed when row 2 landed.
-    """
-    # `uri_stem`, not `Path.stem`: the same file read from GCS and from disk
-    # has to produce the same label, or one input lands in the leaderboard
-    # twice under two names.
-    stem = uri_stem(input_uri).removeprefix("sample_").removesuffix("_train")
-    variant = "_nocorr" if drop_corridor else ""
-    return f"mllib_gbt{variant}@{stem}{n_rows // 1000}k"
+# `oof_encode` reads the same column, so there is one name for it.
+FOLD_COL = OUTER_FOLD_COL
 
 
 def build_pipeline(
@@ -289,6 +282,10 @@ def main() -> None:
                          "1/(1+smoothing). See src/mllib.self_leakage_weight.")
     ap.add_argument("--drop-corridor", action="store_true",
                     help="ablate od_corridor entirely — row 3 of plan §5b")
+    ap.add_argument("--oof", action="store_true",
+                    help="encode od_corridor out-of-fold outside MLlib, in "
+                         "place of StringIndexer + TargetEncoder — migration "
+                         "plan §5.4")
     ap.add_argument("--limit-rows", type=int, default=None,
                     help="seeded row subset for a fast wiring check")
     # Measured peak heap on the full 612,608-row split is 0.82 GiB with the
@@ -342,8 +339,13 @@ def main() -> None:
             df = df.limit(args.limit_rows)
 
         feature_columns = [c for c in df.columns if c != TARGET]
+        if args.oof:
+            # The encoder adds this column inside the fold loop, per outer fold.
+            feature_columns.append(OOF_ENCODED_COL)
         categorical, target_encoded, numeric, unrecognised = split_column_groups(
-            feature_columns, drop_target_encoded=args.drop_corridor
+            feature_columns,
+            drop_target_encoded=args.drop_corridor,
+            oof_encoded=args.oof,
         )
 
         # Say what was dropped. A silent drop and a silent include are both
@@ -355,6 +357,10 @@ def main() -> None:
         print(f"[cols] excluded by design: {list(MLLIB_EXCLUDED_COLUMNS)}")
         if args.drop_corridor:
             print("[cols] od_corridor ABLATED by --drop-corridor (plan §5b row 3)")
+        if args.oof:
+            print(f"[cols] od_corridor OUT-OF-FOLD encoded -> {OOF_ENCODED_COL}, "
+                  f"{OOF_INNER_FOLDS} inner folds per outer train half "
+                  "(migration plan §5.4)")
         if unrecognised:
             print(f"[cols] !! UNRECOGNISED, not used as features: {unrecognised}")
 
@@ -366,12 +372,17 @@ def main() -> None:
         ).cache()
         n_rows = df.count()  # materialises the cache, fixing the fold assignment
 
-        name = model_name(args.input, n_rows, drop_corridor=args.drop_corridor)
+        name = model_name(
+            args.input, n_rows, drop_corridor=args.drop_corridor, oof=args.oof
+        )
         print(f"[data] {args.input}: {n_rows:,} rows -> {name}")
         print(f"[spark] master={master or spark.sparkContext.master} "
               f"defaultParallelism={spark.sparkContext.defaultParallelism}")
         print(f"[cv]   {args.folds} folds, seed={args.seed}, "
               f"GBT maxIter={args.max_iter} maxDepth={args.max_depth}")
+        if args.oof:
+            print(f"[te]   out-of-fold, smoothing={args.smoothing}: a training "
+                  "row never reads back its own fare")
         if target_encoded:
             # State the leakage bound the smoothing buys, at the point of use.
             # Spark's TargetEncoder does not cross-fit, so this number is the
@@ -388,6 +399,9 @@ def main() -> None:
             args.max_depth,
             args.smoothing,
         )
+        # The stage list is the evidence that an OOF run fitted no TargetEncoder.
+        print("[cols] stages: "
+              f"{[type(stage).__name__ for stage in pipeline.getStages()]}")
         evaluators = {
             key: RegressionEvaluator(
                 labelCol=TARGET, predictionCol="prediction", metricName=key
@@ -395,11 +409,28 @@ def main() -> None:
             for key in METRIC_KEYS
         }
 
-        fold_metrics, fit_times = [], []
+        fold_metrics, fit_times, encode_times = [], [], []
         started = time.time()
         for fold in range(args.folds):
-            train = df.filter(F.col(FOLD_COL) != fold).drop(FOLD_COL)
-            test = df.filter(F.col(FOLD_COL) == fold).drop(FOLD_COL)
+            encode_note = ""
+            if args.oof:
+                # Both halves are encoded from this fold's train half only, off
+                # the cached `_fold` above. Cached and counted here so the
+                # encoding runs once, not once per GBT pass and per evaluator,
+                # and so its time is kept apart from the fit's.
+                t0 = time.time()
+                train, test = encode_outer_fold(
+                    df, fold, fold_col=FOLD_COL, k=OOF_INNER_FOLDS,
+                    smoothing=args.smoothing,
+                )
+                train, test = train.cache(), test.cache()
+                train.count()
+                test.count()
+                encode_times.append(time.time() - t0)
+                encode_note = f" encode={encode_times[-1]:.1f}s"
+            else:
+                train = df.filter(F.col(FOLD_COL) != fold).drop(FOLD_COL)
+                test = df.filter(F.col(FOLD_COL) == fold).drop(FOLD_COL)
 
             t0 = time.time()
             model = pipeline.fit(train)
@@ -410,7 +441,10 @@ def main() -> None:
             fold_metrics.append(metrics)
             print(f"[fold {fold}] mae={metrics['mae']:.4f} "
                   f"rmse={metrics['rmse']:.4f} r2={metrics['r2']:.4f} "
-                  f"fit={fit_times[-1]:.1f}s")
+                  f"fit={fit_times[-1]:.1f}s{encode_note}")
+            if args.oof:
+                train.unpersist()
+                test.unpersist()
         elapsed = time.time() - started
 
         row = fold_metrics_to_row(name, fold_metrics, fit_times)
@@ -438,8 +472,18 @@ def main() -> None:
                 # sklearn cross-fits inside fit_transform; Spark does not. This
                 # is the residual difference §5b reports as a Tier-2 finding.
                 "singleton_self_weight": self_leakage_weight(1, args.smoothing),
-            } if target_encoded else None,
+            } if target_encoded else {
+                "smoothing": args.smoothing,
+                "cross_fitted": True,
+                "method": "out-of-fold, spark/ml/src/oof_encode.py",
+                "inner_folds": OOF_INNER_FOLDS,
+                "inner_fold_key": "crc32 over the feature columns",
+                "encoded_column": OOF_ENCODED_COL,
+                "singleton_self_weight": 0.0,
+                "mean_encode_s": sum(encode_times) / len(encode_times),
+            } if args.oof else None,
             "corridor_ablated": args.drop_corridor,
+            "oof_encoded": args.oof,
             "excluded_by_design": list(MLLIB_EXCLUDED_COLUMNS),
             "unrecognised_columns": unrecognised,
             "folds": args.folds,

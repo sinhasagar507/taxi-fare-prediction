@@ -10,8 +10,11 @@ computes the encoding outside MLlib, cross-fitted, and returns it as a plain
 double column, so the §5.4 acceptance run can say whether the encoder was the
 whole story behind the corridor's net-negative effect.
 
-Four functions:
+Five functions:
 
+  - `encode_outer_fold` is the one the CV loop in `01_mllib_baseline.py` calls.
+    It splits one outer fold into its train half and test fold and encodes
+    both from the train half alone (see its docstring).
   - `add_oof_fold` assigns each row an inner fold from a crc32 over its own
     feature values. `monotonically_increasing_id()` and `rand()` both depend on
     partitioning, so a frame read back a second time could land in different
@@ -57,11 +60,11 @@ from functools import reduce
 from pyspark.sql import DataFrame, functions as F
 
 from .features import TARGET
-from .mllib import DEFAULT_SMOOTHING
+from .mllib import DEFAULT_SMOOTHING, OOF_FOLD_COLUMN
 
 KEY_COL = "od_corridor"
 ENCODED_COL = f"{KEY_COL}_te"
-OOF_FOLD_COL = "oof_fold"
+OOF_FOLD_COL = OOF_FOLD_COLUMN
 # The outer CV fold column `01_mllib_baseline.py` assigns.
 OUTER_FOLD_COL = "_fold"
 DEFAULT_K = 5
@@ -163,3 +166,44 @@ def oof_target_encode(
         encoding = fit_target_encoding(complement, key_col, target_col, smoothing)
         parts.append(apply_target_encoding(held_out, encoding))
     return reduce(DataFrame.unionByName, parts)
+
+
+def encode_outer_fold(
+    df: DataFrame,
+    fold: int,
+    fold_col: str = OUTER_FOLD_COL,
+    k: int = DEFAULT_K,
+    smoothing: float = DEFAULT_SMOOTHING,
+    key_col: str = KEY_COL,
+    target_col: str = TARGET,
+) -> tuple[DataFrame, DataFrame]:
+    """(train half, test fold) of outer fold `fold`, each with the encoding.
+
+    Every number comes from the train half, so the outer test fold's fares
+    reach no encoding:
+
+      - the train half is encoded out-of-fold over k inner folds of itself, so
+        a training row never reads back its own fare;
+      - the test fold is encoded by `fit_target_encoding` on the whole train
+        half, then `apply_target_encoding`, with the train half's global mean
+        as the fallback — the same feature the model was fitted on.
+
+    One encoding over the whole split before the outer loop would put the test
+    fold's fares into the training features. `df` must carry `fold_col`,
+    assigned and cached before this call, so each outer split is fixed. Both
+    frames come back without `fold_col` or the inner fold column.
+    """
+    train = df.filter(F.col(fold_col) != fold).drop(fold_col)
+    test = df.filter(F.col(fold_col) == fold).drop(fold_col)
+    train_encoded = oof_target_encode(
+        add_oof_fold(train, k, target_col=target_col),
+        key_col,
+        target_col,
+        OOF_FOLD_COL,
+        k,
+        smoothing,
+    ).drop(OOF_FOLD_COL)
+    test_encoded = apply_target_encoding(
+        test, fit_target_encoding(train, key_col, target_col, smoothing)
+    )
+    return train_encoded, test_encoded
