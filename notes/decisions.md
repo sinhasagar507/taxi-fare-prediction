@@ -258,3 +258,37 @@ Status. The Why is the important field — it is what a future session quotes ba
   full-row key fails to catch. A suspicion that duplicates exist is not a reason — that
   suspicion is what produced this defect, and 270 rows is what it was worth.
 - **Status:** LOCKED (2026-09-07)
+
+## D-013 — D2 stands: the out-of-fold encoder does not rescue the corridor in MLlib
+
+- **Decision:** the successor to D2 (modeling plan §10) and open decision 4 of the GCP
+  cloud migration plan. The §5.4 acceptance is read on **MAE**, as §5.4 states it, and its
+  outcome row is **"MAE at or above row 2"**: the uncross-fitted `TargetEncoder` was not the
+  mechanism behind the corridor's net-negative effect in MLlib. D2 stands — preprocessing,
+  the CV harness and the sweep stay scikit-learn, and PySpark modeling stays a demonstrated
+  baseline, not the champion track. The §5c MLlib arm uses **row 3's configuration**, the
+  corridor dropped (`--drop-corridor`).
+- **Why:** measured 2026-09-15 on the 1,355,641-row D-012 train split, 5 folds, seed 42,
+  GBT `maxIter=100` `maxDepth=5`, smoothing 5, Spark 4.0.1, `local[8]`, the same folds for
+  all three rows (migration plan §5.4, "The §5.4 result on the D-012 split"):
+
+  | Row | `od_corridor` | MAE | RMSE | R² |
+  | --- | --- | ---: | ---: | ---: |
+  | 2, `mllib_gbt@work1355k` | `TargetEncoder`, not cross-fitted | 0.466188 ± 0.005356 | 1.201377 ± 0.021579 | 0.984675 ± 0.000561 |
+  | OOF, `mllib_gbt_oof@work1355k` | cross-fitted out-of-fold | 0.462342 ± 0.000505 | 1.161502 ± 0.011404 | 0.985679 ± 0.000304 |
+  | 3, `mllib_gbt_nocorr@work1355k` | dropped | 0.453134 ± 0.003220 | 1.138785 ± 0.006900 | 0.986234 ± 0.000206 |
+
+  - The OOF MAE is 0.003846 below row 2, inside row 2's fold std of 0.005356. Under the
+    owner's rule, a difference inside the compared run's fold std is no difference.
+  - Row 3 beats the OOF row on all three metrics, by 2.7x to 3.3x row 3's fold std, and on
+    MAE in all 5 folds. So the corridor feature stays net-negative in MLlib even when
+    cross-fitted, which is why the §5c MLlib arm drops it.
+  - The leakage defence was measured, not assumed: the encoder's tests fail on two leaky
+    mutants, and on real data 0 of 1,084,270 train-half rows read back their own fare.
+- **Not taken:** reading §5.4 on RMSE and R², where the OOF row sits materially between
+  rows 2 and 3 (the "partial" row). Its consequence, §5c with the OOF column, would run an
+  arm that row 3 beats on every metric.
+- **Reopen if:** a measurement shows the OOF corridor column beating row 3 on MAE by more
+  than row 3's fold std — for example on `sample_full`, or with a different booster. A
+  belief that more data will help is not a reason; measure it.
+- **Status:** LOCKED (2026-09-15)

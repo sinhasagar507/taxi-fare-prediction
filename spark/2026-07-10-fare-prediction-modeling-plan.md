@@ -380,13 +380,15 @@ instead, and it is the only place the Spark side can win.
 
 D-012 voided the table above: its 612,608 rows came from the pre-fix build. The rows below
 are on the 1,355,641-row D-012 train split, and they do not compare with the rows above.
-All three: 5 folds, seed 42, GBT `maxIter=100` `maxDepth=5`, smoothing 5, Spark 4.0.1 in
-the dev container, `local[8]`, `default_parallelism` 8, so the fold membership is the same.
-No sklearn row exists on this split yet, and no holdout or temporal metric was computed.
+The three MLlib rows: 5 folds, seed 42, GBT `maxIter=100` `maxDepth=5`, smoothing 5,
+Spark 4.0.1 in the dev container, `local[8]`, `default_parallelism` 8, so the fold
+membership is the same. Row 1 comes from the `work_d012` sweep of 2026-09-15, the same
+1,355,641 rows and `KFold(5, seed=42)`. No holdout or temporal metric was computed.
 
 | Row | Model | `od_corridor` | MAE | RMSE | R² | Mean fit |
 |---|---|---|---|---|---|---|
-| 3 | `mllib_gbt_nocorr@work1355k` | dropped | **0.453134** ±0.003220 | **1.138785** ±0.006900 | **0.986234** ±0.000206 | 389.0 s |
+| 1 | `lightgbm` (sklearn) | target-encoded, **cross-fitted** | **0.331289** ±0.001310 | **0.936259** ±0.029962 | **0.990686** ±0.000610 | **5.1 s** |
+| 3 | `mllib_gbt_nocorr@work1355k` | dropped | 0.453134 ±0.003220 | 1.138785 ±0.006900 | 0.986234 ±0.000206 | 389.0 s |
 | OOF | `mllib_gbt_oof@work1355k` | cross-fitted out-of-fold, outside MLlib | 0.462342 ±0.000505 | 1.161502 ±0.011404 | 0.985679 ±0.000304 | 473.8 s |
 | 2 | `mllib_gbt@work1355k` | `TargetEncoder`, not cross-fitted | 0.466188 ±0.005356 | 1.201377 ±0.021579 | 0.984675 ±0.000561 | 532.8 s |
 
@@ -406,8 +408,15 @@ encoded from the whole train half.
   std). Read on those, the encoder was part of the story and MLlib's GBT is the rest.
 - The OOF row's MAE spread is a tenth of row 2's (0.000505 against 0.005356).
 
-The migration plan §5.4 carries the differences, the leakage check on real data, and the
-decision this sets up for the owner: which metric names the §5.4 outcome row.
+- **Row 1 against the Spark rows holds the 2026-09-01 shape, at a smaller accuracy gap.**
+  lightgbm's MAE is 0.134898 below row 2 (25.2x row 2's fold std) and 0.121845 below row 3
+  (37.8x row 3's). On identical rows the sklearn stack is **1.41x more accurate and 105x
+  faster** than row 2, against 1.5x and 167x on the voided 612,608 rows. Against row 3 it
+  is 1.37x and 77x.
+
+The migration plan §5.4 carries the differences and the leakage check on real data. The
+owner read §5.4 on MAE on 2026-09-15, so the outcome row is "at or above row 2" and D2
+stands — recorded as **D-013** in `notes/decisions.md`.
 
 ---
 
@@ -457,6 +466,29 @@ categorical dtype before relying on it.
 **Unknown, not estimated:** `TargetEncoder` cross-fitting over 19,953 corridor levels at
 10.2M rows. It cannot be extrapolated from a 500K slice — measure it with a single-model
 probe (`--sample full --only lightgbm`) before committing to a machine size.
+
+### Re-scoped to D-012 — 2026-09-15
+
+The figures above are pre-D-012 and the scope below replaces the model list. Measured
+2026-09-15:
+
+- **`sample_full` holds 30,482,494 rows**, 2.4x the 12,748,027 above, and it exists in
+  `gs://primary-data-dtc-506916/ml/prep/` only — not on the laptop. Every size and time
+  figure above is therefore a **floor**, not an estimate, and the machine-size question is
+  **UNVERIFIED** until the lightgbm probe runs.
+- **The model list survives, with a new order.** The `work_d012` sweep (14 models,
+  1,355,641 rows, 5 folds, 7,468.0 s in the dev container) gives the same top four by RMSE:
+  `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680, `extra_trees` 0.947680.
+  The first two swapped places, and their gap of 0.007494 is inside the fold std of
+  0.030278, so the order between them is noise. On MAE `catboost` beats `lightgbm` by 8.1x
+  its fold std.
+- **The champion is metric-dependent on this split.** By RMSE it is `catboost`; by MAE it
+  is `stacking` (0.319527), with `extra_trees` 0.319730 and `catboost` 0.320963 inside one
+  fold std of it. `leaderboard()` sorts by RMSE.
+- **`stacking` costs 675.7 s per fold here**, 133x `lightgbm`'s 5.1 s, so it dominates any
+  full-scale budget.
+- **The MLlib arm is row 3's configuration** — the corridor dropped (`--drop-corridor`) —
+  per **D-013**, because the corridor stays net-negative in MLlib even cross-fitted.
 
 ---
 
@@ -708,6 +740,18 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         inside row 2's fold std; on RMSE and R² it sits materially between rows 2 and 3.
         §5b's D-012 table carries the reading.
       - Next: the owner's §5.4 decision (migration plan §5.4).
+- [x] **Phase 4 re-run on the D-012 split — 2026-09-15.** This closes the "re-run pending"
+      above. `01_run_sweep.py --tag work_d012` in the dev container: 14 models, 5 folds,
+      1,355,641 train rows, holdout 338,911 and temporal 133,629 both SEALED and unscored,
+      7,468.0 s. python 3.12.13, numpy 2.4.6, sklearn 1.7.1, lightgbm 4.7.0, xgboost 3.3.0,
+      catboost 1.2.10.
+      - Row 1, `lightgbm`: MAE 0.331289 ± 0.001310, RMSE 0.936259 ± 0.029962, R² 0.990686 ±
+        0.000610, 5.1 s per fold. Against row 2 it is 1.41x more accurate and 105x faster.
+      - Top 4 by RMSE: `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680,
+        `extra_trees` 0.947680 — the same four as the voided list, first two swapped, their
+        gap inside the fold std. §5c's scope is re-derived in §5c.
+      - The owner read §5.4 on MAE, so D2 stands as **D-013**.
+      - Next: re-scope §5c for the 30,482,494-row `sample_full` with a lightgbm probe.
 - [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped

@@ -1894,10 +1894,14 @@ Each with options and a recommendation. None is taken by this document.
    **Recommend (a) first**, with a single `--only lightgbm --sample full` probe as the
    decider; (b) if it OOMs or the encoder probe exceeds an hour.
 
-4. **How far modeling moves to PySpark** (§5). *Options:* (a) the OOF encoder + MLlib arm
-   of every comparison, sklearn champion until the memory boundary; (b) full port of
-   `preprocess.py` / `evaluate.py` / the sweep, losing three model families and the
-   multi-metric harness. **Recommend (a)**, gated on §5.4; record as the successor to D2.
+4. **How far modeling moves to PySpark** (§5). **TAKEN — 2026-09-15, recorded as D-013.**
+   *Options were:* (a) the OOF encoder + MLlib arm of every comparison, sklearn champion
+   until the memory boundary; (b) full port of `preprocess.py` / `evaluate.py` / the sweep,
+   losing three model families and the multi-metric harness. The §5.4 run built the OOF
+   encoder and measured it: read on MAE, the OOF row is inside row 2's fold std, and row 3
+   beats it on all three metrics. So **D2 stands**, PySpark modeling stays a demonstrated
+   baseline, and the §5c MLlib arm drops the corridor (row 3's configuration). (b) was never
+   in reach on this evidence.
 
 5. **Terraform state.** *Options:* (a) local state, gitignored — one operator, one
    laptop; (b) GCS backend in the pipeline bucket under `tfstate/` — survives the laptop,
@@ -1923,7 +1927,10 @@ Each with options and a recommendation. None is taken by this document.
 ## Status
 
 - [ ] Plan reviewed by Sagar
-- [ ] Decisions 1–8 taken; D-006 closed; D2 successor entry added to `notes/decisions.md`
+- [~] Decisions 1–8 taken; D-006 closed; D2 successor entry added to `notes/decisions.md`.
+      **Decisions 2 and 4 are taken** — D-011 (Spark 4.0.1) and **D-013** (2026-09-15, the
+      D2 successor: §5.4 read on MAE, D2 stands, the §5c MLlib arm drops the corridor).
+      Decisions 1, 3, 5–8 stay open; D-006 stays open on audit item 5.
 - [x] M0 — hygiene (tests first; tfstate out of git; `main.tf` rewrite; submodule fix
       upstream + pointer bump; Spark 4.0.1 parity test). **Complete 2026-09-02.** The
       submodule fix landed last, as upstream `305868f`; the pointer moved off `d11219d`,
@@ -1984,6 +1991,14 @@ Each with options and a recommendation. None is taken by this document.
       is "at or above row 2"; RMSE and R² read "between row 2 and row 3". The corridor stays
       net-negative in MLlib on all three metrics. **Next: the owner's §5.4 decision** — see
       "The §5.4 result on the D-012 split" in §5.4.
-- [ ] §5c run scoped per decision 3
+- [~] §5c run scoped per decision 3. **Model list re-derived 2026-09-15**, because D-012
+      voided the sweep it came from: `01_run_sweep.py --tag work_d012` ran 14 models on the
+      1,355,641-row split in 7,468.0 s, local, $0. Top 4 by RMSE unchanged as a set —
+      `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680, `extra_trees` 0.947680
+      — with the first two swapped inside the fold std. Row 1 `lightgbm` MAE 0.331289 ±
+      0.001310, 1.41x more accurate and 105x faster than row 2. The MLlib arm drops the
+      corridor (D-013). **Still open:** the machine size, because `sample_full` holds
+      30,482,494 rows, 2.4x the figure §5c sized against, and it is in the bucket only.
+      Next: the `--sample full --only lightgbm` probe (decision 3).
 - [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped
 - [ ] M6 — documents reconciled; audit items 5, 6, 8 checked off
