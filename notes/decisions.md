@@ -292,3 +292,14 @@ Status. The Why is the important field — it is what a future session quotes ba
   than row 3's fold std — for example on `sample_full`, or with a different booster. A
   belief that more data will help is not a reason; measure it.
 - **Status:** LOCKED (2026-09-15)
+
+## D-014 — Phase 6, neural nets, waits until after the end of the project
+
+- **Decision:** modeling Phase 6 — the PyTorch model with corridor embeddings — is out of
+  the project. The project ends at the tuned tree champion, scored once on the holdout and
+  the temporal test set, with M5 done, the public documents true, and nothing billing.
+- **Why:** the owner chose the fastest path to the end on 2026-09-16. Phase 6 is the
+  largest single block of the remaining work, and nothing in the finish line depends on it.
+  The decisions table is in the modeling plan §6, "The finish plan".
+- **Reopen if:** the owner asks for Phase 6.
+- **Status:** DEFERRED (2026-09-16)

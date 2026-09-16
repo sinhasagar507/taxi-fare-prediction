@@ -500,6 +500,97 @@ The figures above are pre-D-012 and the scope below replaces the model list. Mea
 - Slice metrics by borough / temp_band / hour → final leaderboard
 - Run the **duration on/off ablation** and report the gap
 
+### The finish plan — the owner's decisions and the TUNE goal (2026-09-16)
+
+The owner took these decisions on 2026-09-16, after M4, §5.4 and D-013, and before any
+Phase 5 work. They set the fastest path to the end of the project. The TUNE goal below runs
+stage 1 of that path. It is stored as the owner accepted it; paste it as written. It is
+3,945 characters.
+
+Measured while the goal was written, 2026-09-16, read-only:
+
+- **`sample_full` contains the sealed rows.** `00_prep_spark.py:334` draws `sample_work`
+  from `sample_full` (`stratified_sample(full, ...)`). So the holdout (338,911 rows) and the
+  2016-11 and 2016-12 months of the temporal test set sit inside `sample_full`. The bullet
+  above, "Refit champion on `sample_full`", would train on the rows the holdout later
+  scores. §5b recorded the same overlap for MLlib only. No exclusion step exists.
+- **No tuning code exists.** The dev container has `optuna` 4.9.0 and `shap` 0.52.0; the
+  host `.venv` has neither, nor `lightgbm` or `catboost`.
+- **CatBoost leads on MAE.** `work_d012`: `catboost` 0.320963 ± 0.001271, fit 30.5 s;
+  `lightgbm` 0.331289 ± 0.001310, fit 5.1 s.
+- **The gate is the full suite again.** Host `.venv/bin/pytest tests/`: 385 passed,
+  1 skipped. Container `pytest tests/`: 386 passed. The `--ignore` of
+  `test_oof_encode.py` hid 21 tests.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | The end of the project | **Four results:** a tuned champion scored once on the holdout and the temporal set; M5; a true README, `CASE_STUDY.md` and dashboard; nothing running or billing | A finish line that can be checked | Four stages: tune, scale, score once, close |
+| 2 | Which rows train the holdout champion | **The `sample_work` train split**, 1,355,641 rows | The rows are clean today; no exclusion code, no VM | The "Refit champion on `sample_full`" bullet above is superseded |
+| 3 | Phase 6, neural nets | **After the end** | It is the largest single block of work | D-014, DEFERRED |
+| 4 | §5c at full scale | **The champion + MLlib row 3** | `stacking` was a 4 h floor at 12.75M rows | Both train on `sample_full`, so their numbers are **CV only** and never sit beside the holdout score |
+| 5 | The dashboard | **Reconnect `ds0` + pages 1–2** | Pages 3–6 and the polish were 5 of 10 planned days | The Day 1 baseline numbers predate D-012 and are refreshed |
+| 6 | The champion rule | **Lower tuned CV MAE; a gap inside the larger fold std goes to the faster fit** | MAE is the owner's metric (D-013); speed decides the §5c cost | A close result picks `lightgbm` |
+| 7 | The tuning budget | **45 min per model**, Optuna `TPESampler(seed=42)`, trial 0 the defaults | Trial 0 proves the harness equals the sweep | About 2 h, ESTIMATED |
+| 8 | Speed | **One goal per stage** | The per-step review moves to the goal boundary | The owner's UI work runs beside the compute |
+
+Options not taken: refitting on `sample_full` with the sealed rows removed; Phase 6 inside
+the project; the top four at full scale, or MLlib only; the full v3 dashboard.
+
+<details><summary>The TUNE goal command</summary>
+
+```text
+/goal Tune and diagnose the Phase 5 champion on the D-012 work train split, with the holdout still sealed. MET only when the transcript shows a final report headed "TUNE DONE" with all of:
+(a) notes: the 2026-09-16 decisions table and this goal in the modeling plan; D-014 DEFERRED (Phase 6) in notes/decisions.md;
+(b) TDD src/tune.py: failing test shown in the container, then code; its tests importorskip optuna;
+(c) trial 0 = defaults, per model: CV MAE against work_d012, the difference shown;
+(d) catboost and lightgbm tuned: trials, best params, mae, rmse, r2 mean and std, elapsed;
+(e) the champion by the FACTS rule, both MAEs and stds shown;
+(f) champion diagnostics on out-of-fold predictions: MAE by pickup_borough, temp_band_ord and hour; mean |SHAP| per feature; duration on/off MAE gap;
+(g) docs, measured numbers only (D-009): modeling plan §6 and Status; next = §5c at scale;
+(h) commits: this goal's note + D-014, the tune code, then docs; gate before: host 385 passed 1 skipped, container 386 passed; after: 0 failed, only new tests added; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "TUNE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §4a, §6, §8; notes/decisions.md (D-005, D-009, D-013).
+- Owner decisions 2026-09-16: the holdout champion trains on the work split; Phase 6 after the end; §5c at scale = champion + MLlib row 3, CV only; dashboard = reconnect + pages 1-2.
+- Champion rule, owner 2026-09-16: lower tuned CV MAE; a gap inside the larger fold std goes to the faster fit.
+- sample_full contains sample_work (00_prep_spark.py:334), so it holds the sealed rows. Nothing here reads it.
+- sample_work.parquet: 2 files, 110,474,656 B, 1,828,181 rows. 01_run_sweep.py carves temporal 133,629, holdout 338,911, train 1,355,641.
+- work_d012, 5 folds, seed 42: catboost mae 0.320963 ± 0.001271, fit 30.5 s; lightgbm mae 0.331289 ± 0.001310, fit 5.1 s.
+- No tuning code exists. Container: optuna 4.9.0, shap 0.52.0, catboost 1.2.10, lightgbm 4.7.0, sklearn 1.7.1; 11 CPUs, 11.67 GiB; Airflow 6 services up. The host lacks optuna, shap, lightgbm, catboost.
+- Tuning: Optuna TPESampler(seed=42); objective = evaluate() on make_cv(5); metric MAE; timeout 45 min per model. About 2 h, ESTIMATED.
+- Hour comes from pickup_hour_sin/cos; the frame has no hour column.
+- Gate: .venv/bin/pytest tests/ -> 385 passed, 1 skipped. Container: pytest tests/ -> 386 passed.
+
+STEPS
+1. Gate both. Commit this goal's note and D-014.
+2. TDD src/tune.py: search spaces; the objective reuses sweep.build_pipeline and evaluate; trial 0 enqueues the defaults.
+3. Write spark/ml/02_tune.py: carve exactly as 01_run_sweep.py, tune both, write leaderboard_tune_d012.csv and tune_d012.json (best params, trials, elapsed). Commit 2-3.
+4. Pick the champion by the rule.
+5. Diagnose it: out-of-fold predictions on make_cv(5); slice MAE; SHAP on 20,000 train rows, seed 42; duration off via build_features(include_duration=False).
+6. Docs (g). Commit.
+7. Final gate both. Print "TUNE DONE" with (a)-(h) and the next step: §5c at scale.
+
+PRINT "TUNE STOPPED: <reason>" AND END WHEN
+- a row count differs from FACTS;
+- trial 0's MAE differs from work_d012 by more than that model's fold std;
+- a new test passes before its code exists, or a gate shows a new failure;
+- a model's tuning passes 2x its timeout, or the run passes 4 h;
+- anything computes a holdout or temporal metric;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud calls: no GCS, BigQuery or Dataproc. Delete nothing.
+- Run ML in the dev container. Never read sample_full.
+- Never score, print or select on the holdout or the temporal set.
+- Out of scope: §5c, holdout scoring, Phase 6, CASE_STUDY.md (D-005), the dashboard, dbt edits, terraform.
+```
+
+</details>
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
