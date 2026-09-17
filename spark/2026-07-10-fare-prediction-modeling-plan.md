@@ -591,6 +591,62 @@ RULES
 
 </details>
 
+#### The TUNE results (2026-09-16 to 2026-09-17)
+
+Ran to completion. LightGBM tuned locally in the dev container; CatBoost's tuning needed
+three attempts on this laptop before it ran on a short-lived GCE VM. Full measured record:
+
+- **Trial 0 reproduces the sweep exactly, across every attempt.** Both models' trial 0
+  equals `work_d012` to full float precision — LightGBM 0.3312894770867774 (difference 0,
+  inside its 0.001310 std) and CatBoost 0.3209632524909859 (difference 0, inside its
+  0.001271 std) — on the two aborted local attempts and the completed VM run alike.
+- **LightGBM, 28 trials, 5,278.4 s in the dev container.** Best is trial 21: MAE
+  **0.312976 ± 0.001181**, RMSE 0.924104 ± 0.029779, R² 0.990926 ± 0.000596, fit 19.1 s;
+  `n_estimators` 617, `learning_rate` 0.031875, `num_leaves` 174, `min_child_samples` 13,
+  `colsample_bytree` 0.921348, `reg_lambda` 4.121935.
+- **CatBoost, 7 trials, 2,886.6 s on the cloud VM.** Best is trial 5: MAE
+  **0.319282 ± 0.001334**, RMSE 0.928017 ± 0.031592, R² 0.990848 ± 0.000634, fit 89.7 s;
+  `depth` 8, `random_strength` 2.123391, `subsample` 0.590912. Its local attempts reached
+  only 1 and then 6 trials before freezing — see "The laptop failed three times" below.
+- **Champion, by the owner's rule: LightGBM.** The gap over CatBoost's tuned MAE is
+  0.006306, which exceeds CatBoost's own fold std of 0.001334 — LightGBM wins outright, not
+  on the speed tie-break. It is also 4.7x faster to fit: 19.1 s against 89.7 s.
+- **Champion diagnostics**, on out-of-fold predictions from the tuning folds:
+  - Overall: MAE 0.312976, RMSE 0.924583, R² 0.990927 — equal to the tuned CV mean, as
+    expected on the same folds.
+  - By `pickup_borough`: Manhattan (1,153,561 rows) is best-served at 0.281533; EWR
+    (11 rows) at 19.648423 and Staten Island (40 rows) at 1.307828 are worst, both too thin
+    to read as anything but noise.
+  - By `temp_band_ord` (0=Freezing…4=Hot): a mild upward slope, 0.300806 to 0.321046,
+    flattening at band 4 (0.315272).
+  - By hour: a trough at 6h (0.290058), peaks at 4h (0.365363) and 16h (0.355205) —
+    consistent with thin overnight and evening-peak volume, not an obvious signal.
+  - Mean |SHAP| ranks `distance_capped` (4.018100) and `trip_duration_min` (2.887503) far
+    above everything else; `is_airport_trip` (0.429733) and `od_corridor` (0.222188) are a
+    distant third and fourth. Every borough one-hot column sits below 0.01.
+  - **Duration on/off ablation**, tuned params, same rows and folds: on 0.312976 ± 0.001181
+    against off 1.225862 ± 0.001602 — a **+0.912886** MAE gap. Duration carries most of the
+    model's accuracy, matching the SHAP ranking. The params were tuned with duration on, so
+    this is the cost of removing the feature from the tuned model, not a re-optimized
+    off-model's ceiling.
+
+**The laptop failed three times**, all on the CatBoost re-run, never on LightGBM or the
+diagnostics:
+1. The lid closed on battery power mid-study; the container froze with no CPU ticks
+   advancing, caught via `/proc/1/stat`.
+2. A second attempt, on AC power, was killed by the harness's own low-memory guard — host
+   swap was 91% full. The idle Airflow stack (up 20 h, 3.7 GiB, its scheduler unhealthy)
+   was stopped to free it; restart with `docker compose -f airflow/docker-compose.yaml
+   start` when the stack is needed again.
+3. A third attempt froze again despite `caffeinate`, coinciding with a silent switch back
+   to battery power.
+
+The fourth attempt moved to a short-lived `e2-standard-4` GCE VM (`tune-catboost-vm`,
+us-central1-a, reached over an IAP SSH tunnel; no external GCP calls, since the job only
+reads local files), which ran cleanly with no freeze. **Cost: 1.6551 hours × $0.161/hour ≈
+$0.266.** The VM was deleted immediately after; `gcloud compute instances list` returns
+empty.
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
@@ -843,9 +899,27 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         gap inside the fold std. §5c's scope is re-derived in §5c.
       - The owner read §5.4 on MAE, so D2 stands as **D-013**.
       - Next: re-scope §5c for the 30,482,494-row `sample_full` with a lightgbm probe.
+- [x] **Phase 5, tuning and diagnostics on the work split — 2026-09-16/17.** The TUNE goal;
+      full record in §6, "The TUNE results". `lightgbm` and `catboost` tuned with Optuna,
+      5 folds, `work_d012`'s 1,355,641-row train split, holdout and temporal SEALED and
+      unscored throughout. Tuning **widens lightgbm's lead**: untuned it already beat
+      untuned catboost by MAE (D-013); tuned, lightgbm improves to 0.312976 ± 0.001181
+      (from 0.331289) while catboost barely moves, 0.319282 ± 0.001334 (from 0.320963) —
+      catboost had less room left to tune. **Champion: `lightgbm`**, by the owner's rule
+      (gap 0.006306 outside catboost's std). Diagnosed on out-of-fold predictions: slice
+      MAE by borough/temp-band/hour, mean |SHAP| (`distance_capped` and
+      `trip_duration_min` dominate), and the duration ablation (+0.912886 MAE without it).
+      CatBoost's tuning needed a short-lived GCE VM after the laptop froze three times —
+      $0.266, VM deleted after. Next: §5c at scale, then Phase 5's holdout score.
 - [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped
-      champion + MLlib GBT rather than all 14.
-- [ ] Phase 5: tune + diagnose — scores the sealed holdout **once**, at the end (§4a)
-- [ ] Phase 6: neural nets
+      champion + MLlib GBT rather than all 14. **Rescoped 2026-09-16 (owner):** the champion
+      (`lightgbm`, tuned) plus the MLlib row-3 run only — `stacking`/`extra_trees` dropped.
+      Both train on `sample_full`, which contains the sealed rows
+      (`00_prep_spark.py:334`), so their numbers are **CV only** and never sit beside the
+      Phase 5 holdout score.
+- [~] Phase 5: tune + diagnose. **Tuning and diagnostics done 2026-09-16/17** on the work
+      split, above. The sealed holdout is still unscored — it is scored **once**, after
+      §5c refits the champion on `sample_full` (§4a).
+- [ ] Phase 6: neural nets — **moved after the end of the project (D-014, 2026-09-16).**
