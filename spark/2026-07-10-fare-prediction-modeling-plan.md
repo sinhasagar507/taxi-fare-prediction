@@ -647,6 +647,84 @@ reads local files), which ran cleanly with no freeze. **Cost: 1.6551 hours × $0
 $0.266.** The VM was deleted immediately after; `gcloud compute instances list` returns
 empty.
 
+#### §5c at scale — the goal (2026-09-17)
+
+The owner authorized this step and its cloud spend on 2026-09-17, after the TUNE goal
+closed. It is stored as accepted; paste it as written.
+
+Measured while the goal was written, read-only:
+
+- **`sample_full` cannot be trained on directly.** It still carries the sealed holdout and
+  temporal rows; no `sample_full_train.parquet` exists yet. Both the sklearn refit and the
+  MLlib batch need that split carved first, the same problem the TUNE goal solved for
+  `sample_work`.
+- **`01_run_sweep.py` has no path to the tuned hyperparameters.** It only builds the
+  registry's untuned defaults, so "refit champion" needs a small new script composing
+  already-tested `evaluate.py` and `tune.py` functions, not a sweep run.
+- `sample_full`: 30,482,494 rows, 8 objects, 1,836,372,066 bytes, `gs://primary-data-dtc-506916/ml/prep/sample_full.parquet`.
+- The default Compute Engine service account holds project Editor, which the bucket's IAM
+  maps to `legacyBucketOwner` — the VM needs no keyfile to read or write the bucket.
+- `e2-standard-8` price is **EXTRAPOLATED** at $0.322/hour (2x the VERIFIED
+  `e2-standard-4` rate), not read from the Billing Catalog — that client library is not
+  installed, and installing it mid-goal was avoided rather than done silently.
+- This is two different designs, not one distributed system: the sklearn refit is a single
+  VM (LightGBM multi-threads within it, no cluster); only the MLlib batch is genuinely
+  distributed, on Dataproc Serverless with `maxExecutors=4`.
+
+<details><summary>The SCALE goal command</summary>
+
+```text
+/goal Run §5c at scale: refit the tuned LightGBM champion and the MLlib row-3 config on sample_full, CV only, holdout still sealed. MET only when the transcript shows a final report headed "SCALE DONE" with all of:
+(a) sample_full_train.parquet carved (temporal + holdout sealed and dropped) and uploaded; rows, bytes, crc32c shown;
+(b) TDD: a failing test for the carve-count helper, then code;
+(c) LightGBM refit-CV on the VM: 5-fold mae/rmse/r2 mean+std, elapsed, params used;
+(d) MLlib row-3 batch SUCCEEDED: master dataproc, executors, rows, mae/rmse/r2 mean+std, DCU-seconds, dollars;
+(e) both compared to the TUNE work-split numbers only as context, never as a gate — no holdout or temporal metric anywhere;
+(f) VM deleted, batches list empty, instances list empty; total spend;
+(g) docs, measured only (D-009): modeling plan §6 "The §5c results" + Status; migration plan §5c line; next = Phase 5's one holdout score;
+(h) commits: this note, the carve helper, then results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "SCALE STOPPED:". Stop after 40 turns.
+
+FACTS
+- Owner suspends per-step review for this goal; owner authorized cloud spend generally.
+- sample_full: gs://primary-data-dtc-506916/ml/prep/sample_full.parquet, 30,482,494 rows, 1,836,372,066 bytes, 8 parts.
+- No sample_full_train.parquet exists. Carve with evaluate.make_temporal_test + make_holdout, same as 01_run_sweep.py/02_tune.py.
+- Champion params (tune_d012b.json): lightgbm, n_estimators 617, learning_rate 0.031875, num_leaves 174, min_child_samples 13, colsample_bytree 0.921348, reg_lambda 4.121935.
+- VM: e2-standard-8, us-central1-a, IAP SSH, default SA (Editor -> bucket read/write, no keyfile). Price $0.322/hr, EXTRAPOLATED from the verified e2-standard-4 rate.
+- MLlib: 01_mllib_baseline.py --cluster --drop-corridor, --input the new train split, maxExecutors=4, dependencies rebuilt at current HEAD sha.
+- Gate: pytest tests/ -> 385 passed 1 skipped (host); container 401 passed.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. TDD the carve-count verification helper. Commit.
+3. VM up; fetch sample_full; carve; verify; upload sample_full_train.parquet.
+4. Refit-CV LightGBM on the VM with the champion params; write results to GCS.
+5. Delete the VM.
+6. Upload code at HEAD to dependencies/m4scale-<sha>/; submit the MLlib batch.
+7. Read batch meta + usage.
+8. batches list; instances list.
+9. Docs (g). Commit.
+10. Final gate. Print "SCALE DONE" with (a)-(h); next = the one holdout score.
+
+PRINT "SCALE STOPPED: <reason>" AND END WHEN
+- a row/byte/crc32c count is inconsistent with itself between steps;
+- the batch fails, master isn't dataproc, or no executor ran a task;
+- the VM run exceeds 90 minutes;
+- combined spend passes $6;
+- a new test failure, or a new test passes before its code exists;
+- anything computes a holdout or temporal metric;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only to ml/samples/sample_full_train.parquet, dependencies/m4scale-<sha>/, ml/results/.
+- Delete nothing in GCS. One VM, one batch; never re-run either.
+- Never score, print or select on the holdout or the temporal set.
+- Out of scope: the holdout score itself, Phase 6, CASE_STUDY.md, the dashboard, dbt, terraform.
+```
+
+</details>
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
