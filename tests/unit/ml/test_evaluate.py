@@ -501,3 +501,61 @@ class TestTrainSplitFilename:
 
     def test_no_limit_leaves_the_name_clean(self):
         assert "limit" not in ev.train_split_filename("work", limit_rows=None)
+
+
+# ---------------------------------------------------------------------------
+# verify_carve_split — the §5c scale-up guard (plan §6, "The SCALE goal")
+# ---------------------------------------------------------------------------
+
+class TestVerifyCarveSplit:
+    """`01_run_sweep.py`'s carve (temporal, then holdout, then train) is
+    proven correct at the work-split size. Scaling it to `sample_full`
+    reruns the same three calls on 22x the rows, so the thing worth
+    checking is arithmetic, not policy: did the three pieces partition the
+    sample exactly, and do their shares still look like the work split's —
+    or did something silently drop or duplicate rows at the new size.
+    """
+
+    def test_raises_when_counts_do_not_sum_to_the_sample(self):
+        with pytest.raises(ValueError, match="not sample"):
+            ev.verify_carve_split(n_sample=100, n_temporal=7, n_holdout=18, n_train=74)
+
+    def test_computes_shares_from_a_hand_worked_example(self):
+        # 100 total, 10 temporal, 18 holdout (of the 90 remaining), 72 train.
+        result = ev.verify_carve_split(
+            n_sample=100, n_temporal=10, n_holdout=18, n_train=72
+        )
+        assert result["temporal_share"] == pytest.approx(0.10)
+        assert result["holdout_share"] == pytest.approx(0.20)  # 18 / 90
+        assert result["train_share"] == pytest.approx(0.72)
+
+    def test_shares_match_is_true_with_no_reference_given(self):
+        result = ev.verify_carve_split(
+            n_sample=100, n_temporal=10, n_holdout=18, n_train=72
+        )
+        assert result["shares_match"] is True
+
+    def test_shares_match_is_true_inside_tolerance(self):
+        # work split: temporal 7.31%, holdout 18.54% of sample overall.
+        result = ev.verify_carve_split(
+            n_sample=100,
+            n_temporal=8,
+            n_holdout=17,
+            n_train=75,
+            reference_temporal_share=0.0731,
+            reference_holdout_share=0.1854,
+            tolerance=0.03,
+        )
+        assert result["shares_match"] is True
+
+    def test_shares_match_is_false_outside_tolerance(self):
+        result = ev.verify_carve_split(
+            n_sample=100,
+            n_temporal=30,
+            n_holdout=18,
+            n_train=52,
+            reference_temporal_share=0.0731,
+            reference_holdout_share=0.1854,
+            tolerance=0.03,
+        )
+        assert result["shares_match"] is False

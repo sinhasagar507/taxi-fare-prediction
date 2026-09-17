@@ -228,3 +228,57 @@ def leaderboard(rows: list[dict]) -> pd.DataFrame:
     if board.empty:
         return board
     return board.sort_values("rmse_mean", ignore_index=True)
+
+
+def verify_carve_split(
+    n_sample: int,
+    n_temporal: int,
+    n_holdout: int,
+    n_train: int,
+    *,
+    reference_temporal_share: float | None = None,
+    reference_holdout_share: float | None = None,
+    tolerance: float = 0.03,
+) -> dict:
+    """Check a `make_temporal_test` + `make_holdout` carve at a new sample size.
+
+    The carve itself (§4a) is proven correct at the work-split size. Running
+    it again on `sample_full` — 22x the rows — repeats the same two calls,
+    so the thing worth checking is arithmetic, not policy: did temporal,
+    holdout and train partition the sample exactly, and do their shares
+    still look like the work split's, or did something silently drop or
+    duplicate rows at the new size.
+
+    Raises `ValueError` if the three counts do not sum to `n_sample` — that
+    is a partitioning bug, not sampling noise, and should stop the carve
+    rather than be reported as a share mismatch.
+
+    `reference_*_share` are the work split's measured shares (§4a): temporal
+    is a share of the whole sample, holdout a share of the rows before the
+    temporal cutoff (`make_holdout` draws from the post-carve remainder, not
+    the full sample). Omitting a reference makes `shares_match` vacuously
+    true, so the caller decides which comparisons matter.
+    """
+    total = n_temporal + n_holdout + n_train
+    if total != n_sample:
+        raise ValueError(
+            f"temporal({n_temporal}) + holdout({n_holdout}) + train({n_train}) "
+            f"= {total}, not sample({n_sample})"
+        )
+    temporal_share = n_temporal / n_sample
+    remainder = n_sample - n_temporal
+    holdout_share = n_holdout / remainder if remainder else 0.0
+    train_share = n_train / n_sample
+
+    shares_match = True
+    if reference_temporal_share is not None:
+        shares_match &= abs(temporal_share - reference_temporal_share) <= tolerance
+    if reference_holdout_share is not None:
+        shares_match &= abs(holdout_share - reference_holdout_share) <= tolerance
+
+    return {
+        "temporal_share": temporal_share,
+        "holdout_share": holdout_share,
+        "train_share": train_share,
+        "shares_match": bool(shares_match),
+    }
