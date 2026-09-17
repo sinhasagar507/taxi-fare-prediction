@@ -13,6 +13,10 @@ tuning run:
     docker compose -f docker/dev/docker-compose.yml run --rm dev \
         python spark/ml/02_tune.py --phase diagnose
 
+    # re-tune one model and reuse the other's result from an earlier run
+    ... python spark/ml/02_tune.py --phase tune --models catboost \
+        --reuse tune_d012 --tag tune_d012b
+
     # wiring smoke: a small row subset, 3 folds, 2 trials, nothing checked
     ... python spark/ml/02_tune.py --phase tune --smoke --tag tune_smoke
 
@@ -119,7 +123,7 @@ def phase_tune(args) -> None:
     sweep = pd.read_csv(SWEEP_BOARD).set_index("model") if SWEEP_BOARD.exists() else None
 
     report, board, best_rows = {}, [], {}
-    for name in TUNED_MODELS:
+    for name in args.models:
         print(f"[tune] {name}: timeout {args.timeout_min} min, trial 0 = defaults "
               f"{default_params(name)}")
         started = time.time()
@@ -153,6 +157,22 @@ def phase_tune(args) -> None:
         board += [{"model": f"{name}@default", **row0}, {"model": f"{name}@tuned", **best_row}]
         print(f"[tune] {name}: {len(study.trials)} trials in {elapsed:.1f}s; best #{best.number} "
               f"mae {best_row['mae_mean']:.6f} ± {best_row['mae_std']:.6f} {best.params}")
+
+    # A model left out of --models keeps its record from the --reuse run, so
+    # the champion is still picked between both. The record says so.
+    for name in TUNED_MODELS:
+        if name in args.models:
+            continue
+        if args.reuse is None:
+            raise SystemExit(f"[error] {name} was not tuned here; pass --reuse <tag>")
+        entry = dict(json.loads((RESULTS_DIR / f"{args.reuse}.json").read_text())["models"][name])
+        entry["reused_from"] = args.reuse
+        report[name] = entry
+        best_rows[name] = {k: entry["best"][k] for k in METRIC_KEYS}
+        board += [{"model": f"{name}@default", **{k: entry["trial0"][k] for k in METRIC_KEYS}},
+                  {"model": f"{name}@tuned", **best_rows[name]}]
+        print(f"[tune] {name}: reused from {args.reuse} — {entry['trials']} trials, "
+              f"best mae {best_rows[name]['mae_mean']:.6f}")
 
     champion = pick_champion(best_rows)
     print(f"[champion] {champion}")
@@ -249,9 +269,19 @@ def main() -> None:
     ap.add_argument("--timeout-min", type=float, default=45.0)
     ap.add_argument("--n-trials", type=int, default=None)
     ap.add_argument("--limit-rows", type=int, default=None)
+    ap.add_argument("--models", default=",".join(TUNED_MODELS),
+                    help="comma-separated subset of the tuned models to search")
+    ap.add_argument("--reuse", default=None,
+                    help="tag of an earlier run that supplies the models not searched")
     ap.add_argument("--smoke", action="store_true",
                     help="wiring check: skips the FACTS checks; pair with --limit-rows")
     args = ap.parse_args()
+    args.models = [m.strip() for m in args.models.split(",") if m.strip()]
+    unknown = set(args.models) - set(TUNED_MODELS)
+    if unknown:
+        raise SystemExit(f"[error] unknown model(s): {sorted(unknown)}")
+    if args.reuse == args.tag:
+        raise SystemExit("[error] --reuse and --tag must differ, or the earlier record is overwritten")
     if args.smoke and args.tag == "tune_d012":
         raise SystemExit("[error] a smoke run must not write the tune_d012 outputs; pass --tag")
     (phase_tune if args.phase == "tune" else phase_diagnose)(args)
