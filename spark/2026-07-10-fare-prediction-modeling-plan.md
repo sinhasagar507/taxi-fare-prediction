@@ -725,6 +725,59 @@ RULES
 
 </details>
 
+#### SCALE stopped at the VM's 90-minute limit — memory wall found (2026-09-17/18)
+
+**SCALE STOPPED: the VM run passed 90 minutes** (137.5 min total, mostly spent recovering
+from a broken GCS transfer tool, not the actual job) **and the job itself then hit a
+memory wall the goal did not anticipate.** No Dataproc batch was submitted. The VM was
+deleted immediately; `gcloud compute instances list` and the batches `RUNNING`/`PENDING`
+filter both return empty. **Cost: 137.5 min × $0.322/hour (EXTRAPOLATED) ≈ $0.738**, under
+the $6 cap.
+
+What happened, in order:
+
+1. **`gcloud storage cp`'s parallel transfer manager hangs on this VM**, under any identity
+   — every worker process alive with zero bytes moving, for as long as it was left running.
+   Not an auth issue: it hung identically before and after the correct service account was
+   activated.
+2. **`gsutil -m` "completed" with corrupted output.** The temp files reached the exact
+   source byte counts, but their CRC32C did not match the source objects — real content
+   corruption, not a naming artifact. Discovered by checksumming before trusting the data,
+   per D-009.
+3. **A serial `gsutil` transfer, once the identity was fixed, worked correctly** — all 8
+   parts verified byte-for-byte and CRC32C-for-CRC32C against the source. Two `pkill`
+   commands aimed at the stuck transfer killed the SSH session itself instead, costing two
+   more reconnect cycles.
+4. **The default Compute Engine service account cannot read the bucket at all**, despite
+   holding project Editor. Both it and the operator's own `gcloud` OAuth identity got
+   `403 storage.objects.get denied` on every attempt. Only `dtc-de-course@...` — the
+   service account behind `secrets/gcp-credentials.json` — could read the objects. The
+   open decision 1's "no keyfile needed" assumption was wrong; this VM needed the keyfile
+   copied up, used, and is now gone with the VM.
+5. **`e2-standard-8` (32 GiB) cannot hold `sample_full` in pandas.** The container was
+   OOM-killed (exit 137) immediately after `pd.read_parquet` reported 30,482,494 rows —
+   before `build_features` ran, before any fit. The §5c table's 4.8 GB estimate at 10.2M
+   rows was for the **post-`build_features` feature frame**, not the raw loaded frame with
+   every original column; that raw-frame cost was never measured and is not the same
+   number. `03_scale_champion.py` itself never printed `[split]`, so the carve, the CV fit,
+   and `sample_full_train.parquet` do not exist yet.
+
+**What survived:** the code (`03_scale_champion.py`, `b0e07f1`) and the carve-count guard
+(`a60ffdb`) are committed and dry-run-verified against `sample_work.parquet`, reproducing
+the TUNE champion's exact numbers. Nothing about them is wrong — the machine under them
+was too small.
+
+**Next, before another VM:** measure the raw-frame memory cost directly — read
+`sample_full.parquet` on a large machine once, log peak RSS, and size the real VM from
+that number instead of extrapolating a different number. A `--memory` limit on the
+container would have converted this silent 137 into a clear log line, and a smaller
+project of the columns `build_features` will actually keep, done at the pyarrow layer
+before the pandas conversion, may cut the peak enough to avoid the resize entirely — the
+§5c table already named this same idea as "the category-dtype enabler," for the same
+reason. Fetching the data proved the identity problem is solved and repeatable: activate
+`dtc-de-course@...` from a copied keyfile, then run `gsutil` (never `gcloud storage cp`)
+serially.
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
