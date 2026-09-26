@@ -44,7 +44,12 @@ Status. The Why is the important field — it is what a future session quotes ba
   pushes and the merge under the PUBLISH goal, recorded at the end of this file. The
   public default branch still showed the pre-cleanup state: 50 commits behind, the course
   lesson notes, and the duration case study.
-- **Status:** REOPENED (2026-09-26) — PUBLISH in progress
+- **Status:** CLOSED (2026-09-26) — PR #2 merged into `main` with a merge commit,
+  `594d5c8`, after the branch was pushed as a fast-forward (`2af2464..a4f21fe`). Both CI
+  checks passed (`dbt`, GitGuardian). `origin/main`'s tree now equals the branch tree;
+  course mentions on `main` 10 files → 0; secret scan 0. Nothing local was lost: a
+  verified `git bundle --all` and the worktree's diff sit in
+  `../nyc_taxi_migration_backup/publish-20260926/`, and no branch was deleted.
 
 ## D-003 — `project_architecture/` move stays parked
 

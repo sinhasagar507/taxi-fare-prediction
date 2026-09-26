@@ -14,12 +14,15 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       Fix with `git cherry-pick --quit` (NOT `--abort`).
       **Verified clear 2026-09-01:** no `.git/sequencer`, no `.git/CHERRY_PICK_HEAD`,
       `git status` clean. Cleared in an earlier session; the box was never ticked.
-- [ ] 2. 14 commits unpushed on `refactor/wire-pipeline` — the whole Phase-4/4b ML
+- [x] 2. 14 commits unpushed on `refactor/wire-pipeline` — the whole Phase-4/4b ML
       program exists only locally. Push after clearing item 1.
       **Partly overtaken, still open 2026-09-01.** The branch reached `origin` at some
       point after the audit, so the backlog is no longer 14. It stands at 7, six of them
       from the 2026-09-01 session. **The owner pushes** — that session was explicitly
       instructed not to touch any remote.
+      **Done 2026-09-26 (PUBLISH, D-002 closed).** The branch was pushed as a
+      fast-forward and merged into `main` through PR #2 (`594d5c8`); `origin/main`'s tree
+      equals the branch tree.
 - [x] 3. Uncommitted edit in `spark/2026-07-10-fare-prediction-modeling-plan.md` —
       the 2026-08-09 leakage-verification write-up. Commit it.
       **Done before 2026-09-01** — landed as `d7e5ea8`, "docs(ml): measure the sklearn
