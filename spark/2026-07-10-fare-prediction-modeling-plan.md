@@ -162,7 +162,8 @@ When the prep is next re-run:
    **Done** — `4985c03`, in the 2026-09-13 samples.
 2. Carve a second test set: the **last 2 of 24 months (2016-11, 2016-12, ≈8%)**.
    **Done 2026-09-13** — 133,629 rows, 7.31%, measured; see above.
-3. Score the Phase-5 champion on **both** test sets and report the pair. **Open — Phase 5.**
+3. Score the Phase-5 champion on **both** test sets and report the pair. **Done 2026-09-26**
+   — holdout MAE 0.311353, temporal 0.316332, a +0.004979 gap; §6, "The HOLDOUT result".
    - **Agreement** → the random split was safe, and you can say so with evidence rather
      than assertion.
    - **Divergence** → real temporal drift, quantified.
@@ -1045,6 +1046,48 @@ RULES
 
 </details>
 
+#### The HOLDOUT result — Phase 5's one score (2026-09-26)
+
+Scored **once**, in the dev container, by `04_holdout_score.py` at `d91de1d`. The
+once-only guard ran before any load; the score file
+`spark/ml/results/holdout_d012.json` (gitignored) now blocks a second run, so this
+section is the permanent record. Inputs checked against FACTS first: `sample_work`
+part-00000 55,157,841 B `xRpTjg==`, part-00001 55,316,815 B `r4pp0Q==`,
+`sample_work_train.parquet` 16,406,311 B `1fvgNQ==`. The carve reproduced temporal
+133,629 / holdout 338,911 / train 1,355,641, and the train target equals
+`sample_work_train.parquet`.
+
+The model: `lightgbm` with the tuned champion params (TUNE trial 21), fitted once on the
+1,355,641 train rows in 25.7 s. Python 3.12.13, lightgbm 4.7.0, sklearn 1.7.1.
+
+| Set | Rows | MAE | RMSE | R² |
+|---|---:|---|---|---|
+| CV on the train rows, 5 folds (TUNE, context only) | 1,355,641 | 0.312976 ± 0.001181 | 0.924104 ± 0.029779 | 0.990926 ± 0.000596 |
+| **Random holdout** (2015-01 to 2016-10) | 338,911 | **0.311353** | 0.910174 | 0.991193 |
+| **Temporal set** (2016-11 to 2016-12) | 133,629 | **0.316332** | 0.924683 | 0.991211 |
+| — 2016-11 | 65,459 | 0.317243 | 0.885626 | 0.992020 |
+| — 2016-12 | 68,170 | 0.315457 | 0.960694 | 0.990415 |
+
+The two gaps, measured:
+
+- **Holdout against CV: −0.001623 MAE.** The holdout is slightly better than the CV mean,
+  by 1.37x the fold std. A likely reason is that the final fit uses all 1,355,641 rows
+  while each CV fold trained on 80% of them — **UNVERIFIED**, since testing it would take
+  another fit, and the sealed sets are scored once. The CV estimate was not optimistic.
+- **Temporal against holdout: +0.004979 MAE**, 1.6% relative, 4.2x the CV fold std.
+  RMSE rises 0.014509; R² is equal to three decimals. Both months sit above the holdout,
+  and December (0.315457) is no worse than November (0.317243), so the gap does not grow
+  across the two months measured.
+
+**Reading (§4a step 3).** The pair diverges, and the divergence is quantified: a model
+trained on 2015-01 to 2016-10 predicts the next two months' fares about half a cent per
+trip worse than it predicts random held-out trips from its own period. The random split
+was optimistic by that amount. At a fare MAE of $0.31 it is small, which fits the §4a
+prior that rate cards did not change across 2015-16. Nothing was re-selected on either
+score; the champion, params and features are unchanged.
+
+Next: `CASE_STUDY.md` — D-005 held it until Phase 5, and Phase 5 is complete.
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
@@ -1328,7 +1371,12 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         0.000125; 6,583.6 s; 96,454.390 DCU-s.
       - Spend $2.97 (VM $1.25, batch $1.71). The goal stopped once when the VM passed 120
         minutes while its delete waited; the owner continued it on 2026-09-26.
-- [~] Phase 5: tune + diagnose. **Tuning and diagnostics done 2026-09-16/17** on the work
-      split, above. §5c's refit is done (2026-09-26). The sealed holdout is still
-      unscored — it is scored **once**, next (§4a).
+- [x] **Phase 5: tune + diagnose — COMPLETE 2026-09-26.** Tuning and diagnostics done
+      2026-09-16/17 on the work split, above; §5c's refit done 2026-09-26. **The one
+      score**, `04_holdout_score.py` at `d91de1d`, the tuned `lightgbm` fitted on the
+      1,355,641 train rows: random holdout (338,911) MAE **0.311353**, RMSE 0.910174, R²
+      0.991193; temporal set (133,629) MAE **0.316332**, RMSE 0.924683, R² 0.991211
+      (2016-11 0.317243, 2016-12 0.315457). Holdout − CV MAE −0.001623; temporal −
+      holdout +0.004979. Scored once, guarded in code; nothing re-selected. §6, "The
+      HOLDOUT result". Next: `CASE_STUDY.md` (D-005).
 - [ ] Phase 6: neural nets — **moved after the end of the project (D-014, 2026-09-16).**
