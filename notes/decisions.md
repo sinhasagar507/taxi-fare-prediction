@@ -40,7 +40,11 @@ Status. The Why is the important field — it is what a future session quotes ba
 - **Why:** nothing in any plan gates on it. Surfacing it as a pending next step reads as
   pressure and misrepresents what the plan requires.
 - **Reopen if:** the owner asks for the PR.
-- **Status:** DEFERRED (2026-07-30)
+- **Reopened 2026-09-26** — the owner asked for the PR (its Reopen-if) and authorized the
+  pushes and the merge under the PUBLISH goal, recorded at the end of this file. The
+  public default branch still showed the pre-cleanup state: 50 commits behind, the course
+  lesson notes, and the duration case study.
+- **Status:** REOPENED (2026-09-26) — PUBLISH in progress
 
 ## D-003 — `project_architecture/` move stays parked
 
@@ -310,3 +314,77 @@ Status. The Why is the important field — it is what a future session quotes ba
   The decisions table is in the modeling plan §6, "The finish plan".
 - **Reopen if:** the owner asks for Phase 6.
 - **Status:** DEFERRED (2026-09-16)
+
+---
+
+## PUBLISH — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after SCRUB. It is stored as accepted; paste it as
+written. It reopens D-002 above.
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | How  catches up | **PR #2, merged with a merge commit**, like PR #1 | History stays whole; the PR is the public record of the change |
+| 2 | Git history that still holds the course text | **Kept** — no rewrite, no force push | A rewrite is destructive and rewrites a public branch others may have cloned |
+| 3 | What "lose nothing local" covers | A verified , the worktree diff as a patch, the lesson notes on disk, the worktree untouched | The lesson notes are gitignored on the branch but tracked on : a checkout of  in this tree, then back, would delete them |
+| 4 | Branches | **None deleted**, local or remote | Deletion is out of this goal's scope |
+
+Measured when the goal was written (2026-09-26):  , the branch
+, 50 ahead; trial merge clean, merged tree equal to the branch tree; 57 files on
+ only; course mentions on  10 files, on the branch 0; secret scan 0 on both.
+Gate at step 1, the first measurement after SCRUB: host 415 passed, 2 skipped; container
+430 passed, 1 skipped.
+
+<details><summary>The PUBLISH goal command</summary>
+
+```text
+/goal Bring origin/main up to refactor/wire-pipeline through PR #2, so the public default branch holds the cleaned repository; lose nothing local. MET only when the transcript shows a final report headed "PUBLISH DONE" with all of:
+(a) note: the PUBLISH decisions + this goal in notes/decisions.md; D-002 reopened, then closed;
+(b) backup before any push: a git bundle of --all verified; the worktree's diff saved as a patch; SHAs listed;
+(c) the branch pushed fast-forward; PR #2 opened and merged with a merge commit, like PR #1;
+(d) origin/main tree equals the branch tree; course mentions on origin/main: 0; secret scan: 0;
+(e) local main fast-forwarded without a checkout; lesson notes still on disk (7 files + 49 images); the worktree unchanged;
+(f) docs, measured only (D-009): audit item 2 checked; CLAUDE.md branch line updated;
+(g) commits: note, docs; gate before/after; git status clean.
+Judge IMPOSSIBLE if a line starts "PUBLISH STOPPED:". Stop after 20 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Owner: reopen D-002 — the owner asks for the PR, its Reopen-if. The owner authorizes these pushes and the PR merge.
+- Repo sinhasagar507/taxi-fare-prediction: PUBLIC, default branch main; PR #1 merged 2026-09-04.
+- origin/main b74deba (merge of PR #1). refactor/wire-pipeline ab97379: 50 ahead of origin/main, behind only by that merge; 14 ahead of origin/refactor/wire-pipeline.
+- Trial merge (git merge-tree): clean; merged tree == branch tree.
+- On origin/main only: 57 files (7 lesson notes, 49 images, CASE_STUDY.md at the root); 10 files mention the course. The branch: 0.
+- Secret scan (private_key, PRIVATE KEY): 0 on both.
+- Local lesson notes: 7 files + 49 images in notes/, gitignored. A checkout of main in this tree would re-track them, and switching back would delete them.
+- Worktree .claude/worktrees/shimmering-riding-starfish: 6efa0ab (1 commit not on the branch) + 4 modified files.
+- Local main ac1e71f: 71 behind origin/main, 0 ahead.
+- Git history still holds the course text; no history rewrite.
+- Gate: host 407 passed, 2 skipped; container 423 passed (2026-09-26). UNVERIFIED after the SCRUB commits.
+
+STEPS
+1. Gate both. Commit the note.
+2. Bundle to ../nyc_taxi_migration_backup/; git bundle verify. Save the worktree diff there.
+3. git push origin refactor/wire-pipeline (no force).
+4. gh pr create --base main; gh pr merge --merge.
+5. git fetch; checks (d); git fetch origin main:main; checks (e).
+6. Docs (f). Commit. Push the docs commit (no force).
+7. Final gate. Print "PUBLISH DONE" with (a)-(g); next = README to D-012 counts (SCRUB's next).
+
+PRINT "PUBLISH STOPPED: <reason>" AND END WHEN
+- the bundle fails to verify, or a push needs --force;
+- the PR shows a conflict, or the merged tree differs from the branch tree;
+- a course mention or a secret is found on origin/main after the merge;
+- a local file under notes/ disappears, or the worktree changes;
+- a new test fails;
+- the same tool failure happens twice.
+
+RULES
+- No force push, no history rewrite, no branch deletion (local or remote).
+- Never check out main in this working tree.
+- Touch nothing in the worktree. No Co-Authored-By.
+- No cloud resources. The TERMINATED closeout-airflow-vm stays as it is.
+- Out of scope: README counts, the dashboard, dbt, terraform, Phase 6.
+```
+
+</details>
