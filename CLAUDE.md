@@ -46,14 +46,15 @@ The modeling target is **fare** (`fare_capped`), locked (D-001). The repository 
 still says "duration" and stays that way; the README carries a note explaining the pivot.
 The case study, rewritten to fare after Phase 5, is `notes/CASE_STUDY.md` (D-005 closed).
 
-## GCP — not provisioned, working locally
+## GCP — `dtc-de-project-506916`, live on the free-trial credit
 
-**No GCP project is provisioned. Treat no GCP resource as live; expect no credentials.**
-Do not spend time diagnosing an auth failure — there is nothing to authenticate against.
-The dbt-built marts are held locally, outside the working tree, so `spark/ml/` runs end
-to end with no cloud. To connect a project of your own, supply a keyfile via
-`GOOGLE_APPLICATION_CREDENTIALS` and set `GCP_PROJECT_ID` / `GCP_GCS_BUCKET`.
-Bucket/dataset layout reference: **`notes/gcp-reference.md`**.
+**The project is provisioned and billed.** Bucket `primary-data-dtc-506916`; layout in
+**`notes/gcp-reference.md`**. Locally, auth is the keyfile `secrets/gcp-credentials.json`
+(SA `dtc-de-course@…`) via `GOOGLE_APPLICATION_CREDENTIALS` — the gcloud user account has
+no bucket access. On a VM, attach that SA and use `airflow/docker-compose.vm.yaml`.
+**Nothing may bill idle:** `gcloud compute instances list` shows only TERMINATED VMs and no
+Dataproc batch is RUNNING/PENDING, before and after any cloud work. Read the migration
+plan before spending. `spark/ml/` still runs locally from the backup.
 
 The dbt project is a **git submodule** at `dbt/ny_taxi_analytics` (remote:
 github.com/sinhasagar507/ny_taxi_analytics, authoritative — the submodule pins a commit).
@@ -119,7 +120,8 @@ Three environments with non-overlapping jobs. Two Docker stacks; they are never 
   resolves it; set `MIGRATION_BACKUP_DIR` to point elsewhere. Tests run locally + in
   CI, not on the VM.
 - **Auth:** keyfile via `GOOGLE_APPLICATION_CREDENTIALS` locally/CI; on the VM use an
-  attached service account (ADC) — no keyfiles inside images or git, ever.
+  attached service account (ADC) via `airflow/docker-compose.vm.yaml` — no keyfiles
+  inside images or git, ever.
 - **Prod images are built on the VM itself** (decided 2026-07-10): clone the repo on the
   VM and `docker compose up --build` there. This sidesteps the Apple-Silicon/amd64
   mismatch entirely — local Mac builds are dev-only and must never be pushed to the VM.
@@ -167,14 +169,12 @@ Phases 0–4 are **done** (each verified `pytest tests/` green); full detail in
 - ✅ Phase 2 — pruned unreferenced learning artifacts.
 - ✅ Phase 3 — restructure: `05_batch_processing/` → `spark/`, mechanical moves only.
 - ✅ Phase 4 — DRY'd config to env vars; stable credentials path; parametrized ingest window.
-- ⏳ Phase 5 — document: reconcile this file + README to the final structure, and to
-  running without a provisioned GCP project. *Done so far:* docs reconciled; branch
-  pushed to origin.
+- ✅ Phase 5 — docs reconciled to the final structure and the live project (M6, 2026-09-26).
 
 ## Current work + the Decision Register
 
-**Open work** lives in `notes/2026-08-22-repo-audit.md` — 12 items from the 2026-08-22
-audit, with the attack order. Read it before starting new work; check items off there.
+**The one next pointer:** this file → the Status list of
+`notes/2026-09-02-gcp-cloud-migration-plan.md` → the modeling plan's Status.
 
 **Notes are pulled, not read wholesale (D-010).** Every project document carries an
 `Invoke when:` line, and `notes/README.md` indexes all of them by trigger. Scan that index;

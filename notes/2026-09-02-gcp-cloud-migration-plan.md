@@ -1504,11 +1504,11 @@ Every number below is measured.
 
 ### M6 — Documents
 
-- [ ] CLAUDE.md: replace the "GCP — not provisioned" section; keep "Deployment split"
+- [x] CLAUDE.md: replace the "GCP — not provisioned" section; keep "Deployment split"
       (D-006 resolved: keep). `notes/gcp-reference.md`: live layout, fingerprint table,
       the post-run cost checks. `notes/decisions.md`: D-006 entry closed with this file as
       the reason; §5's D2 reversal recorded as a new entry.
-- [ ] `notes/2026-08-22-repo-audit.md`: check off 5, 6, 8; the workstream order (item 6)
+- [x] `notes/2026-08-22-repo-audit.md`: check off 5, 6, 8; the workstream order (item 6)
       is: **this migration through M3 → modeling §5 encoder + §5c → dashboard v3.**
       Item 8's "one next pointer" is: CLAUDE.md → this file → the modeling plan Status.
 - [x] `spark/ml/requirements.txt` to `pyspark==4.0.1` if M0's parity test passed.
@@ -2082,6 +2082,7 @@ Each with options and a recommendation. None is taken by this document.
 
 - [ ] Plan reviewed by Sagar
 - [~] Decisions 1–8 taken; D-006 closed; D2 successor entry added to `notes/decisions.md`.
+      **D-006 closed 2026-09-26** (keep the Deployment split); the D2 successor is D-013.
       **Decisions 2 and 4 are taken** — D-011 (Spark 4.0.1) and **D-013** (2026-09-15, the
       D2 successor: §5.4 read on MAE, D2 stands, the §5c MLlib arm drops the corridor).
       Decisions 1, 3, 5–8 stay open; D-006 stays open on audit item 5.
@@ -2145,7 +2146,10 @@ Each with options and a recommendation. None is taken by this document.
       is "at or above row 2"; RMSE and R² read "between row 2 and row 3". The corridor stays
       net-negative in MLlib on all three metrics. **Next: the owner's §5.4 decision** — see
       "The §5.4 result on the D-012 split" in §5.4.
-- [~] §5c run scoped per decision 3. **Model list re-derived 2026-09-15**, because D-012
+- [x] §5c run scoped per decision 3. **Complete 2026-09-26:** RESCALE ran both arms on the
+      22,603,549-row `sample_full` train split — LightGBM CV MAE 0.304570 ± 0.000319, MLlib
+      row 3 0.465098 ± 0.002346, $2.97 in total (modeling plan §6, "The RESCALE results").
+      The history below stands. **Model list re-derived 2026-09-15**, because D-012
       voided the sweep it came from: `01_run_sweep.py --tag work_d012` ran 14 models on the
       1,355,641-row split in 7,468.0 s, local, $0. Top 4 by RMSE unchanged as a set —
       `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680, `extra_trees` 0.947680
@@ -2160,4 +2164,7 @@ Each with options and a recommendation. None is taken by this document.
       `nyc_taxi_zone_ingestion_dag` and `create_external_table_taxi_zone` both `success`;
       the object 12,331 B, `tzgoCw==`. 15.11 min RUNNING, about $0.019; `TERMINATED`.
       Record: M5, "The M5 result".
-- [ ] M6 — documents reconciled; audit items 5, 6, 8 checked off
+- [x] M6 — documents reconciled; audit items 5, 6, 8 checked off. **Complete 2026-09-26.**
+      CLAUDE.md's GCP section replaced; D-006 closed (keep); audit items 5, 6, 8 checked.
+- **Next: the dashboard v3, owner-built** (`notes/2026-05-24-Dashboard-development-plan-v3.md`).
+      Open audit items (2, 7) stay in `notes/2026-08-22-repo-audit.md`.

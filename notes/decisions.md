@@ -83,7 +83,10 @@ Status. The Why is the important field — it is what a future session quotes ba
   unconditionally. Moving them early would hide them exactly when they matter. Cutting
   them early would pre-empt a decision that is not made yet.
 - **Reopen if:** audit item 5 is decided.
-- **Status:** LOCKED (2026-08-22)
+- **Status:** CLOSED (2026-09-26) — audit item 5 is decided: provision, and the GCP design
+  continues (`notes/2026-09-02-gcp-cloud-migration-plan.md`, M5). So the subsection
+  **stays in CLAUDE.md**. M5 proved its auth rule on a VM: the attached SA, ADC and the
+  override `airflow/docker-compose.vm.yaml`, with no keyfile.
 
 ## D-007 — Sequential sessions, not worktrees
 

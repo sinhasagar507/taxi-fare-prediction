@@ -70,6 +70,30 @@ docker compose -f airflow/docker-compose.yaml up --build -d
 # → open localhost:8080, trigger nyc_taxi_gcs_yellow_dag, watch task states
 ```
 
+### On a GCE VM, with no keyfile (M5, 2026-09-26)
+
+The VM runs the attached SA `dtc-de-course@…` with the `cloud-platform` scope. Create it
+with `--max-run-duration` and `--instance-termination-action`, so its end never depends on
+an interactive step. Ship the code with `git archive` over IAP `scp` while the branch is
+unpushed, then on the VM:
+
+```bash
+echo "AIRFLOW_UID=$(id -u)" > .env
+sudo docker compose -f docker-compose.yaml -f docker-compose.vm.yaml up -d --build
+```
+
+Wait for `ssh.service` on the serial console before the first IAP `scp`; an early attempt
+fails with "Connection closed". The measured run is in the migration plan, "The M5 result".
+
+### Post-run checks — nothing billing
+
+```bash
+gcloud compute instances list        # every VM TERMINATED, or the list empty
+gcloud dataproc batches list --region=us-central1 --filter="state=RUNNING OR state=PENDING"
+```
+
+Both ran clean after M5 on 2026-09-26: the one VM `TERMINATED`, zero batches.
+
 ## Development plan history (Phases 0–4, full text)
 
 Compressed in CLAUDE.md 2026-08-22; original detail:

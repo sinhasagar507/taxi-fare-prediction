@@ -35,21 +35,31 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       `notes/decisions.md`. The folder name stays; the README pivot note carries it.
       **Done 2026-09-26:** Phase 5 scored the holdout, D-005 was reopened and closed, and
       the case study is rewritten to fare at `notes/CASE_STUDY.md`.
-- [ ] 5. GCP target decision missing: no project is provisioned, so Airflow/dbt/
+- [x] 5. GCP target decision missing: no project is provisioned, so Airflow/dbt/
       Terraform/BQ cannot run end-to-end and the §5c cloud run has no target. Record a
       decision: provision a project, build a local substitute, or archive-as-reference.
       *Rider (2026-08-22):* the decision settles the "Deployment split" subsection in
       CLAUDE.md — keep it if the GCP design continues, else move it to
       `notes/gcp-reference.md` and keep only the no-keyfiles auth rule.
-- [ ] 6. Three workstreams (pipeline docs, ML sweep, dashboard v3) with no priority
+      **Done 2026-09-26.** Decided "provision" in `notes/2026-09-02-gcp-cloud-migration-plan.md`
+      (2026-09-02) and carried through M5: the Airflow stack ran the zone DAG and its
+      external-table DAG on a GCE VM with ADC. The design continues, so the Deployment split
+      stays in CLAUDE.md (D-006 closed), and CLAUDE.md's "not provisioned" section is replaced.
+- [x] 6. Three workstreams (pipeline docs, ML sweep, dashboard v3) with no priority
       order. Write the order down.
+      **Done 2026-09-26.** The order, per the migration plan M6: the migration through M3 →
+      modeling §5 encoder + §5c → dashboard v3. The first two are complete (M3 2026-09-12,
+      §5c RESCALE 2026-09-26, Phase 5's holdout 2026-09-26, M5 2026-09-26). **Next: the
+      dashboard v3, owner-built.**
 
 ## C. Plan-of-action gaps
 
 - [ ] 7. Branch scope: `refactor/wire-pipeline` now carries the entire ML program.
       Decide how to split future work into smaller branches.
-- [ ] 8. Two plans, no single next-step list: CLAUDE.md's phase plan and the spark
+- [x] 8. Two plans, no single next-step list: CLAUDE.md's phase plan and the spark
       modeling plan don't point at each other. Add cross-links / one "next" pointer.
+      **Done 2026-09-26.** One pointer: CLAUDE.md → the migration plan Status → the modeling
+      plan Status.
 
 ## D. Implementation drawbacks
 
@@ -105,7 +115,7 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
 ## Attack order
 
 1. ✅ Items 1–3 (git state) — one short cleanup session. Item 2 is the owner's to finish.
-2. ⬜ Items 5–6 + 8 — one decision document. **Still open.**
+2. ✅ Items 5–6 + 8 — one decision document, the migration plan. Closed 2026-09-26 (M6).
 3. ✅ Item 4 — docs reconciliation. `CASE_STUDY.md` waits on D-005.
 4. ✅ Items 9–11 — prune + relocate. Done 2026-09-01. `CASE_STUDY.md` held by D-005.
 5. ✅ Resume the modeling plan at MLlib row 2 (Phase 4b §5b); item 12 rides along there.
