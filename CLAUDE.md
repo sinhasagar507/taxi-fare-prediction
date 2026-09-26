@@ -172,7 +172,7 @@ Phases 0–4 are **done** (each verified `pytest tests/` green); full detail in
 - ✅ Phase 5 — docs reconciled to the final structure and the live project (M6, 2026-09-26).
 
 **Branches:** `main` is the public default branch. `refactor/wire-pipeline` was merged into
-it through PR #2 (`594d5c8`, 2026-09-26); the two tips hold the same tree. Commits before
+it through PR #2 (`594d5c8`, 2026-09-26); at the merge the two tips held the same tree. Commits before
 the scrub (`07e55f7`) still track the lesson notes that `notes/` now keeps gitignored:
 checking one out and switching back deletes the local copies.
 
