@@ -8,8 +8,7 @@ This project predicts the fare of a New York City taxi trip from what is known w
 trip is booked. It is also the data platform behind that model: two years of public trip
 records flow from the city's open data site into Google Cloud Storage, BigQuery and dbt,
 and out to a model trained with scikit-learn and LightGBM, with Spark doing the heavy data
-preparation. It started as the capstone of the DataTalksClub Data Engineering Zoomcamp and
-was carried well past it. The target started as trip duration and moved to fare (D-001).
+preparation. The target started as trip duration and moved to fare (D-001).
 
 **Stack:** Google Cloud Storage, BigQuery, dbt Core, Apache Airflow, PySpark and Dataproc
 Serverless, scikit-learn, LightGBM, Docker, Terraform, GitHub Actions, pytest.

@@ -40,7 +40,7 @@ If a turn changed nothing, say so — silence is not the same as "no changes".
 
 ## Project: NYC Taxi Fare Prediction
 
-End-to-end data engineering pipeline (DataTalksClub DE Zoomcamp): TLC trip data → GCS →
+End-to-end data engineering pipeline: TLC trip data → GCS →
 BigQuery external tables → dbt marts → fare model (`spark/ml/`) + Looker Studio.
 The modeling target is **fare** (`fare_capped`), locked (D-001). The repository folder name
 still says "duration" and stays that way; the README carries a note explaining the pivot.
