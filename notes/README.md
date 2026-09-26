@@ -11,6 +11,7 @@ below; read only the notes whose trigger fires. Do not read them all.
 
 | Document | Invoke when |
 | --- | --- |
+| [Case study](CASE_STUDY.md) | Writing the project up for a resume, portfolio or interview, or checking a public claim about it. |
 | [Decision Register](decisions.md) | **Always.** Before proposing anything. A LOCKED entry stops contradicting work; a DEFERRED one is never a next step. |
 | [GCP cloud migration plan](2026-09-02-gcp-cloud-migration-plan.md) | Any cloud, Terraform, Dataproc, BigQuery or cost question. Before spending anything. Its Status list is the current next-step pointer. |
 | [Repository audit, 2026-08-22](2026-08-22-repo-audit.md) | Starting new work, or looking for what is still open. |

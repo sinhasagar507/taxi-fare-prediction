@@ -1378,5 +1378,6 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
       0.991193; temporal set (133,629) MAE **0.316332**, RMSE 0.924683, R² 0.991211
       (2016-11 0.317243, 2016-12 0.315457). Holdout − CV MAE −0.001623; temporal −
       holdout +0.004979. Scored once, guarded in code; nothing re-selected. §6, "The
-      HOLDOUT result". Next: `CASE_STUDY.md` (D-005).
+      HOLDOUT result". Next: `CASE_STUDY.md` (D-005). **Done 2026-09-26:** rewritten to
+      fare and moved to `notes/CASE_STUDY.md`; D-005 closed.
 - [ ] Phase 6: neural nets — **moved after the end of the project (D-014, 2026-09-16).**

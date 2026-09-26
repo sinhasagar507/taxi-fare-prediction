@@ -44,7 +44,7 @@ End-to-end data engineering pipeline (DataTalksClub DE Zoomcamp): TLC trip data 
 BigQuery external tables → dbt marts → fare model (`spark/ml/`) + Looker Studio.
 The modeling target is **fare** (`fare_capped`), locked (D-001). The repository folder name
 still says "duration" and stays that way; the README carries a note explaining the pivot.
-`CASE_STUDY.md` still predates it — see D-005 and audit item 4.
+The case study, rewritten to fare after Phase 5, is `notes/CASE_STUDY.md` (D-005 closed).
 
 ## GCP — not provisioned, working locally
 

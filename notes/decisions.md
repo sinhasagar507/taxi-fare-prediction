@@ -67,7 +67,11 @@ Status. The Why is the important field — it is what a future session quotes ba
   once, per the §4a split policy. A rewrite now goes stale the day Phase 5 lands.
 - **Reopen if:** modeling Phase 5 lands, or a job-application deadline needs a partial
   write-up sooner. The `ds-writeup` skill generates it when the time comes.
-- **Status:** LOCKED (2026-08-22)
+- **Reopened 2026-09-26** by the owner: "reopen D-005 — Phase 5 landed 2026-09-26, its
+  Reopen-if. Rewrite, not remove." Phase 5 scored the sealed holdout once (modeling plan
+  §6, "The HOLDOUT result"), so the headline number exists.
+- **Status:** CLOSED (2026-09-26) — rewritten to the fare story with the `ds-writeup`
+  skill and moved to `notes/CASE_STUDY.md`. Every number in it cites a committed note.
 
 ## D-006 — The "Deployment split" subsection rides audit item 5
 

@@ -27,12 +27,14 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
 
 ## B. Vision gaps
 
-- [~] 4. Identity mismatch: repo name + README say **duration**; the locked modeling
+- [x] 4. Identity mismatch: repo name + README say **duration**; the locked modeling
       target is **fare** (`fare_capped`); `CASE_STUDY.md` (Jun 3) predates the pivot.
       **Done 2026-08-22:** the CLAUDE.md "Project" section and the README are reoriented
       to fare (title, intro, diagram, `spark/` tree, plus a note explaining the pivot).
       **Remaining:** `CASE_STUDY.md` waits for modeling Phase 5 — see D-005 in
       `notes/decisions.md`. The folder name stays; the README pivot note carries it.
+      **Done 2026-09-26:** Phase 5 scored the holdout, D-005 was reopened and closed, and
+      the case study is rewritten to fare at `notes/CASE_STUDY.md`.
 - [ ] 5. GCP target decision missing: no project is provisioned, so Airflow/dbt/
       Terraform/BQ cannot run end-to-end and the §5c cloud run has no target. Record a
       decision: provision a project, build a local substitute, or archive-as-reference.
@@ -73,7 +75,7 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       guard in `test_docker_runtime.py` stays — it costs nothing and still catches a
       restore. Docs updated in CLAUDE.md, `notes/gcp-reference.md`, the runbook (since
       renamed `notes/gcp-setup-runbook.md`) and the modeling plan.
-- [~] 11. Loose root documents (`2026-05-24-Dashboard-development-plan-v3.md`,
+- [x] 11. Loose root documents (`2026-05-24-Dashboard-development-plan-v3.md`,
       `project-status-phase5.pdf`, `MIGRATION_RUNBOOK.md`, `CASE_STUDY.md`) have no
       home. Relocate to `notes/`.
       **Three of four done 2026-09-01.** The dashboard plan, the runbook and the status
@@ -85,6 +87,8 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       it untouched until modeling Phase 5 scores the sealed holdout. Moving it is not a
       rewrite, but the entry says *untouched*, and the file's fate — rewrite or delete —
       is decided by that same phase. Move it then, in the change that settles it.
+      **Done 2026-09-26:** moved to `notes/CASE_STUDY.md` in the rewrite commit, and
+      indexed in `notes/README.md`.
 - [x] 12. Known model defect unassigned: design matrix rank 25/27 (dummy trap,
       cond ≈ 4e15), coefficients unstable. Assign it a phase in the modeling plan.
       **Closed 2026-09-01 — the defect was already fixed.** `fc87020` (2026-08-01) added
