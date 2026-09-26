@@ -165,7 +165,9 @@ course this project began in from the tracked repository. It is stored as accept
 one change, stated here: the goal's search pattern names the two course words, and a
 verbatim copy would make this note the one match the goal forbids. Each of its three
 occurrences reads `<course-words>` below. The pattern is the course's name in lower case
-and the organiser's name in lower case, joined by `|`.
+and the organiser's name in lower case, joined by `|`. For the same reason, the two quoted
+occurrences of the old DAG tag read `'<old-tag>'`; the old tag is `dtc-de`, in single
+quotes.
 
 | # | Question | Decision | Why |
 |---|---|---|---|
@@ -186,7 +188,7 @@ the same gate on both, HEAD `c2360d2`.
 Remove every course mention from the tracked repository: finish the staged scrub, rename the DAG tag dtc-de, commit. MET only when the transcript shows a final report headed "SCRUB DONE" with all of:
 (a) note: the SCRUB decisions + this goal in notes/2026-08-22-repo-audit.md, committed alone;
 (b) git grep -nIi -E "<course-words>" returns nothing; git ls-files notes shows 11 files; the 7 lesson files + 49 images still on disk and git check-ignore'd;
-(c) tag: git grep -nI "'dtc-de'" returns nothing; 4 DAGs and 2 airflow/tests stubs say 'nyc-taxi';
+(c) tag: git grep -nI "'<old-tag>'" returns nothing; 4 DAGs and 2 airflow/tests stubs say 'nyc-taxi';
 (d) the live GCP names unchanged (dtc-de-project-506916, primary-data-dtc-506916, dtc-de-course@);
 (e) commits: note, scrub, tag; gate before/after; git status clean; unpushed.
 Judge IMPOSSIBLE if a line starts "SCRUB STOPPED:". Stop after 20 turns.
@@ -198,7 +200,7 @@ FACTS
 - Staged: 56 deletions (notes/1_intro.md, 2_data_ingestion.md, 3_data_warehouse.md, 4_analytics.md, 5_batch_processing.md, 6_streaming.md, extra1_preparing_data.md, notes/images/ 49 files); .gitignore (8 new paths); notes/README.md (Course notes section cut).
 - Unstaged: CLAUDE.md:43, README.md:3, notes/CASE_STUDY.md:11 mentions removed. CLAUDE.md 222 lines.
 - git grep <course-words>: no match. git ls-files notes: 11.
-- Tag 'dtc-de': airflow/dags/nyc_climate_gcs_dag.py:120, nyc_taxi_gcs_green_dag.py:89, nyc_taxi_gcs_yellow_dag.py:89, nyc_taxi_zone_gcs_dag.py:78; airflow/tests/test_nyc_climate_dag.py:73, test_nyc_taxi_yellow_dag.py:69 (legacy stubs, not in the gate).
+- Tag '<old-tag>': airflow/dags/nyc_climate_gcs_dag.py:120, nyc_taxi_gcs_green_dag.py:89, nyc_taxi_gcs_yellow_dag.py:89, nyc_taxi_zone_gcs_dag.py:78; airflow/tests/test_nyc_climate_dag.py:73, test_nyc_taxi_yellow_dag.py:69 (legacy stubs, not in the gate).
 - tests/unit/test_stale_ids.py and tests/unit/dags/test_dag_config.py match the dtc-de- project-ID pattern; they are not the tag. Leave them.
 - Gate: host 415 passed, 2 skipped (2026-09-26, with the staged scrub); container 430 passed, 1 skipped (2026-09-26, c2360d2).
 - Git history still holds the files; a rewrite is out of scope.

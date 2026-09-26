@@ -86,7 +86,7 @@ with DAG(
     schedule_interval='0 6 1 * *',
     catchup=True,
     max_active_runs=1,
-    tags=['dtc-de'],
+    tags=['nyc-taxi'],
 ) as dag:
 
     download_dataset_task = PythonOperator(

@@ -75,7 +75,7 @@ with DAG(
     schedule_interval=None,
     catchup=False,
     max_active_runs=1,
-    tags=['dtc-de'],
+    tags=['nyc-taxi'],
 ) as dag:
 
     download_dataset_task = PythonOperator(
