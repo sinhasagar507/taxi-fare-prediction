@@ -324,14 +324,14 @@ written. It reopens D-002 above.
 
 | # | Question | Decision | Why |
 |---|---|---|---|
-| 1 | How  catches up | **PR #2, merged with a merge commit**, like PR #1 | History stays whole; the PR is the public record of the change |
+| 1 | How `main` catches up | **PR #2, merged with a merge commit**, like PR #1 | History stays whole; the PR is the public record of the change |
 | 2 | Git history that still holds the course text | **Kept** — no rewrite, no force push | A rewrite is destructive and rewrites a public branch others may have cloned |
-| 3 | What "lose nothing local" covers | A verified , the worktree diff as a patch, the lesson notes on disk, the worktree untouched | The lesson notes are gitignored on the branch but tracked on : a checkout of  in this tree, then back, would delete them |
+| 3 | What "lose nothing local" covers | A verified `git bundle --all`, the worktree diff as a patch, the lesson notes on disk, the worktree untouched | The lesson notes are gitignored on the branch but tracked on `main`: a checkout of `main` in this tree, then back, would delete them |
 | 4 | Branches | **None deleted**, local or remote | Deletion is out of this goal's scope |
 
-Measured when the goal was written (2026-09-26):  , the branch
-, 50 ahead; trial merge clean, merged tree equal to the branch tree; 57 files on
- only; course mentions on  10 files, on the branch 0; secret scan 0 on both.
+Measured when the goal was written (2026-09-26): `origin/main` `b74deba`, the branch
+`ab97379`, 50 ahead; trial merge clean, merged tree equal to the branch tree; 57 files on
+`main` only; course mentions on `main` 10 files, on the branch 0; secret scan 0 on both.
 Gate at step 1, the first measurement after SCRUB: host 415 passed, 2 skipped; container
 430 passed, 1 skipped.
 
