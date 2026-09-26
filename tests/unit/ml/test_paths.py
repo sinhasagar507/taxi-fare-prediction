@@ -74,3 +74,60 @@ def test_repo_root_points_at_the_repository():
     """paths.REPO_ROOT anchors every other path; a wrong anchor breaks all of them."""
     assert (paths.REPO_ROOT / "CLAUDE.md").exists()
     assert paths.REPO_ROOT == REPO_ROOT
+
+
+# ---------------------------------------------------------------------------
+# Where the prep reads from — the local backup, or BigQuery through the connector
+# ---------------------------------------------------------------------------
+
+class TestSourceKind:
+    """Migration plan M4 runs the same prep against two different sources.
+
+    Locally it reads the 7.1 GB parquet backup. On Dataproc it reads
+    `dbt_prod.fact_trips` through the BigQuery connector, and the point of that
+    run is to prove the two agree — 128,408,323 rows and the same p99 caps. One
+    `--source` flag therefore has to carry both, and the script has to be able
+    to tell which it was handed before it builds a SparkSession.
+
+    The project id is **required**, not optional. The connector would happily
+    accept `dbt_prod.fact_trips` and resolve the project from the environment,
+    which is how a run reads the wrong project's mart and reports the number
+    with total confidence. Three segments or it is not a table.
+    """
+
+    def test_fully_qualified_table_is_bigquery(self):
+        assert paths.is_bigquery_table(
+            "dtc-de-project-506916.dbt_prod.fact_trips"
+        )
+
+    def test_the_local_sentinel_is_not_bigquery(self):
+        assert not paths.is_bigquery_table(paths.LOCAL_SOURCE)
+
+    def test_absolute_path_is_not_bigquery(self):
+        assert not paths.is_bigquery_table("/data/nyc_taxi_backup/fact_trips")
+
+    def test_bucket_uri_is_not_bigquery(self):
+        """A gs:// URI has dots in the object name and must not be mistaken for
+        a table id."""
+        assert not paths.is_bigquery_table("gs://primary-data/ml/sample.parquet")
+
+    def test_two_segments_is_rejected_so_the_project_stays_explicit(self):
+        """`dbt_prod.fact_trips` is a valid table reference to the connector,
+        which resolves the project from the environment. That is exactly how a
+        run silently reads a different project's mart, so it is refused here."""
+        assert not paths.is_bigquery_table("dbt_prod.fact_trips")
+
+    def test_a_filename_with_an_extension_is_not_a_table(self):
+        assert not paths.is_bigquery_table("sample_full.parquet")
+
+    def test_four_segments_is_rejected(self):
+        assert not paths.is_bigquery_table("a.b.c.d")
+
+    def test_empty_segment_is_rejected(self):
+        assert not paths.is_bigquery_table("project..table")
+
+    def test_blank_source_is_rejected(self):
+        assert not paths.is_bigquery_table("")
+
+    def test_whitespace_is_not_a_table(self):
+        assert not paths.is_bigquery_table("   ")

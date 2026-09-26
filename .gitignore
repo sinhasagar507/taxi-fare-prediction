@@ -241,3 +241,13 @@ project-status-phase5.pdf
 spark/head.csv
 spark/Demo Spark notebook.ipynb
 spark/nyc_taxi_duration_prediction_1.ipynb
+
+# Inherited course lesson notes: kept on the owner's disk, not part of the project.
+notes/1_intro.md
+notes/2_data_ingestion.md
+notes/3_data_warehouse.md
+notes/4_analytics.md
+notes/5_batch_processing.md
+notes/6_streaming.md
+notes/extra1_preparing_data.md
+notes/images/

@@ -70,7 +70,7 @@ class TestNYCClimateDAG:
         assert dag.schedule_interval == '0 6 1 * *'  # Monthly at 6 AM
         assert dag.catchup is False
         assert dag.max_active_runs == 1
-        assert 'dtc-de' in dag.tags
+        assert 'nyc-taxi' in dag.tags
     
     @patch('pandas.read_csv')
     @patch('pyarrow.Table.from_pandas')

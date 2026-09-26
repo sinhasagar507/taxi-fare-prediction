@@ -61,3 +61,38 @@ def resolve_backup_dir(env: dict | None = None) -> Path:
 def resolve_fact_trips_dir(env: dict | None = None) -> Path:
     """Absolute path to the parquet `fact_trips` directory the prep reads."""
     return resolve_backup_dir(env) / FACT_TRIPS_SUBDIR
+
+
+# --- which source the prep reads --------------------------------------------
+# Migration plan M4 runs the same prep twice: against the local parquet backup,
+# and against `dbt_prod.fact_trips` through the BigQuery connector. The whole
+# point of the second run is that the two agree, so one flag carries both and
+# the script asks this function which it was handed.
+LOCAL_SOURCE = "local"
+
+# project.dataset.table. Exactly three.
+_TABLE_SEGMENTS = 3
+
+
+def is_bigquery_table(source: str) -> bool:
+    """True when `source` names a BigQuery table rather than a local backup.
+
+    **The project id is required.** The connector accepts a bare
+    `dataset.table` and resolves the project from the environment, which is the
+    mechanism by which a run reads a different project's mart and then reports
+    the row count with complete confidence. This milestone reads `dbt_prod` and
+    must be able to say which `dbt_prod`. Two segments are therefore refused,
+    not helpfully completed.
+
+    Legacy `project:dataset.table` is refused for the same reason a typo is:
+    one accepted spelling means one thing to check. A path or a bucket URI is
+    refused by the same rule, since `sample_full.parquet` and
+    `gs://bucket/a.b.parquet` both carry dots that are not separators.
+    """
+    text = str(source).strip()
+    if not text or text == LOCAL_SOURCE:
+        return False
+    if "/" in text or ":" in text:
+        return False
+    segments = text.split(".")
+    return len(segments) == _TABLE_SEGMENTS and all(segments)

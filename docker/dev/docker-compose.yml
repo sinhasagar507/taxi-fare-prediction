@@ -6,7 +6,7 @@
 #   docker compose -f docker/dev/docker-compose.yml run --rm dev pytest tests/
 #   docker compose -f docker/dev/docker-compose.yml run --rm dev dbt --version
 #   docker compose -f docker/dev/docker-compose.yml run --rm dev \
-#       python spark/ml/00_prep_spark.py --limit-files 3
+#       python spark/ml/00_prep_spark.py --source local --limit-files 3
 #   docker compose -f docker/dev/docker-compose.yml run --rm dev bash
 #   docker compose -f docker/dev/docker-compose.yml up   # JupyterLab
 #     -> http://127.0.0.1:8888/lab?token=nyc-taxi-dev

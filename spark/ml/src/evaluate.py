@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from sklearn.metrics import (
     make_scorer,
     mean_absolute_error,
@@ -26,6 +28,11 @@ RANDOM_STATE = 42
 STRATIFY_COLUMNS = ("service_type", "temp_band_ord")
 
 HOLDOUT_FRACTION = 0.2
+
+# The temporal test set (plan §4a): every trip from this instant on — the last
+# 2 of the 24 months — is sealed whole, before the random holdout is drawn.
+TEMPORAL_CUTOFF = pd.Timestamp("2016-11-01")
+TEMPORAL_COLUMN = "pickup_datetime"
 
 # Metric functions — single source for both the CV scorers and any ad-hoc
 # reporting (Phase-5 slice metrics reuse these).
@@ -91,6 +98,36 @@ def make_holdout(
     return X_train, X_test, y_train, y_test
 
 
+def make_temporal_test(
+    df: pd.DataFrame,
+    cutoff: pd.Timestamp = TEMPORAL_CUTOFF,
+    column: str = TEMPORAL_COLUMN,
+):
+    """Carve the temporal test set off a prep sample (plan §4a).
+
+    Returns (before, temporal): trips that start before `cutoff`, and trips
+    that start at or after it. The random 80/20 holdout lets 2016-06 inform a
+    2016-03 prediction; the temporal set holds out the last two months whole,
+    so Phase 5 can score the champion on trips later than anything it saw.
+    It is sealed like the holdout — scored once, in Phase 5, never here.
+
+    Runs on the **raw** frame, before `build_features`, because that drops
+    `pickup_datetime`. `make_holdout` then draws only from `before`. Index
+    labels are kept, so every row stays traceable to the sample file.
+
+    A frame without the date column raises rather than returning an empty
+    temporal set: the pre-D-012 samples carry no date, and an empty carve
+    would look like a seal while sealing nothing.
+    """
+    if column not in df.columns:
+        raise ValueError(
+            f"no '{column}' column to carve the temporal test set on — the "
+            "sample predates it; regenerate it with 00_prep_spark.py"
+        )
+    is_temporal = df[column] >= cutoff
+    return df.loc[~is_temporal], df.loc[is_temporal]
+
+
 def train_split_filename(
     sample: str,
     include_duration: bool = True,
@@ -118,7 +155,9 @@ def train_split_filename(
     return "_".join(parts) + ".parquet"
 
 
-def write_train_split(X, y, path, target_name: str | None = None) -> Path:
+def write_train_split(
+    X, y, path, target_name: str | None = None, chunk_rows: int = 1_000_000
+) -> Path:
     """Persist the train half of the sealed split as one parquet file.
 
     The MLlib baseline (plan §5b) has to train on the *same* rows the sklearn
@@ -152,10 +191,31 @@ def write_train_split(X, y, path, target_name: str | None = None) -> Path:
             "duplicate would silently double that feature in Spark"
         )
 
-    frame = pd.concat([X, y.rename(name)], axis=1)
+    # Row chunks through one ParquetWriter, not `pd.concat` + `to_parquet`:
+    # the concat is a full second copy of X, which at §5c scale is the
+    # difference between fitting in RAM and not (plan §6, "RESCALE"). Each
+    # chunk is one row group; the schema is fixed by the first chunk so a
+    # chunk whose string column is all-null cannot drift to the null type.
+    if not X.index.equals(y.index):
+        y = y.reindex(X.index)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(path, index=False)
+    writer = None
+    try:
+        for start in range(0, len(X), chunk_rows):
+            chunk = X.iloc[start:start + chunk_rows].assign(
+                **{name: y.iloc[start:start + chunk_rows].to_numpy()}
+            )
+            table = pa.Table.from_pandas(
+                chunk, preserve_index=False,
+                schema=writer.schema if writer is not None else None,
+            )
+            if writer is None:
+                writer = pq.ParquetWriter(path, table.schema)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
     return path
 
 
@@ -193,3 +253,57 @@ def leaderboard(rows: list[dict]) -> pd.DataFrame:
     if board.empty:
         return board
     return board.sort_values("rmse_mean", ignore_index=True)
+
+
+def verify_carve_split(
+    n_sample: int,
+    n_temporal: int,
+    n_holdout: int,
+    n_train: int,
+    *,
+    reference_temporal_share: float | None = None,
+    reference_holdout_share: float | None = None,
+    tolerance: float = 0.03,
+) -> dict:
+    """Check a `make_temporal_test` + `make_holdout` carve at a new sample size.
+
+    The carve itself (§4a) is proven correct at the work-split size. Running
+    it again on `sample_full` — 22x the rows — repeats the same two calls,
+    so the thing worth checking is arithmetic, not policy: did temporal,
+    holdout and train partition the sample exactly, and do their shares
+    still look like the work split's, or did something silently drop or
+    duplicate rows at the new size.
+
+    Raises `ValueError` if the three counts do not sum to `n_sample` — that
+    is a partitioning bug, not sampling noise, and should stop the carve
+    rather than be reported as a share mismatch.
+
+    `reference_*_share` are the work split's measured shares (§4a): temporal
+    is a share of the whole sample, holdout a share of the rows before the
+    temporal cutoff (`make_holdout` draws from the post-carve remainder, not
+    the full sample). Omitting a reference makes `shares_match` vacuously
+    true, so the caller decides which comparisons matter.
+    """
+    total = n_temporal + n_holdout + n_train
+    if total != n_sample:
+        raise ValueError(
+            f"temporal({n_temporal}) + holdout({n_holdout}) + train({n_train}) "
+            f"= {total}, not sample({n_sample})"
+        )
+    temporal_share = n_temporal / n_sample
+    remainder = n_sample - n_temporal
+    holdout_share = n_holdout / remainder if remainder else 0.0
+    train_share = n_train / n_sample
+
+    shares_match = True
+    if reference_temporal_share is not None:
+        shares_match &= abs(temporal_share - reference_temporal_share) <= tolerance
+    if reference_holdout_share is not None:
+        shares_match &= abs(holdout_share - reference_holdout_share) <= tolerance
+
+    return {
+        "temporal_share": temporal_share,
+        "holdout_share": holdout_share,
+        "train_share": train_share,
+        "shares_match": bool(shares_match),
+    }

@@ -17,11 +17,12 @@ The backup sits OUTSIDE the working tree (audit item 10, 2026-09-01) — by
 default in the repository's sibling `nyc_taxi_migration_backup/`. Override with
 the `MIGRATION_BACKUP_DIR` environment variable; see `spark/ml/src/paths.py`.
 
-Run (from repo root):
-    .venv/bin/python spark/ml/00_prep_spark.py                 # full 128M pass
-    .venv/bin/python spark/ml/00_prep_spark.py --limit-files 3 # fast dry-run
+Run (from repo root). `--source` is required — every run names what it reads:
+    .venv/bin/python spark/ml/00_prep_spark.py --source local                 # full local pass
+    .venv/bin/python spark/ml/00_prep_spark.py --source local --limit-files 3 # fast dry-run
     MIGRATION_BACKUP_DIR=/Volumes/ext/backup \
-        .venv/bin/python spark/ml/00_prep_spark.py             # backup elsewhere
+        .venv/bin/python spark/ml/00_prep_spark.py --source local             # backup elsewhere
+    ... --source <project>.<dataset>.fact_trips --cluster                     # the cloud prep (M4)
 
 Design notes (see spark/2026-07-04-ml-handoff-context.md and
 spark/2026-07-10-fare-prediction-modeling-plan.md):
@@ -51,14 +52,29 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from spark.ml.src.paths import BACKUP_DIR_ENV, resolve_fact_trips_dir  # noqa: E402
+from spark.ml.src.paths import (  # noqa: E402
+    BACKUP_DIR_ENV,
+    LOCAL_SOURCE,
+    is_bigquery_table,
+    resolve_fact_trips_dir,
+)
+# The URI helpers live in src/mllib.py because that is where their tests live,
+# and M4 needs them in both scripts. Neither module imports pyspark.
+from spark.ml.src.mllib import (  # noqa: E402
+    is_local_master,
+    is_remote_uri,
+    join_uri,
+    spark_master,
+    write_text,
+)
 
 # The 7.1 GB backup lives OUTSIDE the working tree since audit item 10
 # (2026-09-01). `spark/ml/src/paths.py` owns the resolution rule; set
 # MIGRATION_BACKUP_DIR to point the prep at a different disk or mount.
 FACT_TRIPS_DIR = resolve_fact_trips_dir()
 OUT_DIR = REPO_ROOT / "spark" / "ml" / "data"
-STATS_PATH = OUT_DIR / "prep_stats.json"
+DEFAULT_OUTPUT = str(OUT_DIR)
+STATS_NAME = "prep_stats.json"
 
 # --- domain constants (from handoff §2/§4) -----------------------------------
 # temp_band boundaries in °F: Freezing <32, Cold 32-50, Mild 50-68, Warm 68-85, Hot >85
@@ -71,17 +87,54 @@ LEAKAGE_COLS = [
     "tip_amount", "tolls_amount", "mta_tax", "extra", "improvement_surcharge",
     "total_amount", "payment_type", "payment_type_description",
 ]
-# Identifiers / unused columns dropped to keep the sample lean
-DROP_COLS = ["tripid", "vendorid", "store_and_fwd_flag", "climate_date", "mjd",
+# Identifiers / unused columns dropped to keep the sample lean.
+# `tripid` is deliberately NOT here any more: plan §5.3 needs it as the stable
+# row key for out-of-fold fold assignment. It is carried to the sample and
+# excluded from the feature matrix by features.EXCLUDED_COLUMNS, not by dropping
+# it here — the encoder cannot use a column the prep threw away.
+DROP_COLS = ["vendorid", "store_and_fwd_flag", "climate_date", "mjd",
              "pickup_locationid", "dropoff_locationid", "pickup_date"]
 
+# The modeling schema. Every downstream stage reads the samples this list
+# defines, so it is the prep's real output contract — a module constant rather
+# than a local, so tests can assert on it without a SparkSession.
+KEEP_COLS = [
+    # stable row key — §5.3 assigns OOF folds with crc32(tripid). The plan
+    # rejects monotonically_increasing_id(): it is not stable across
+    # re-materialisation, so a wrong fold would be silent. Never a feature.
+    "tripid",
+    # raw pickup timestamp — §4a's deferred temporal split orders rows by it.
+    # pickup_hour / pickup_dow are derived from it and kept separately.
+    # Never a feature.
+    "pickup_datetime",
+    # target + raw reference
+    "fare_capped", "fare_amount",
+    # numeric predictors
+    "trip_distance", "distance_capped", "trip_duration_min",
+    "passenger_count", "temperature", "pickup_hour", "pickup_dow",
+    # categoricals
+    "service_type", "pickup_borough", "dropoff_borough",
+    "pickup_zone", "dropoff_zone", "temp_band",
+    # binary flag + raw ratecode for audit
+    "is_airport_trip", "ratecodeid",
+    # optional climate (precip confirmed null-effect; kept for exploration only)
+    "humidity", "windSpeed", "visibility",
+]
 
-def build_spark(driver_mem: str = "6g") -> SparkSession:
+
+def build_spark(driver_mem: str = "6g", master: str = "local[*]") -> SparkSession:
+    """The master is always set. `mllib.spark_master` explains why: on
+    Dataproc Serverless an unset master resolves to `local`.
+
+    Driver memory rides with a local master: it is a launch-time setting, so
+    on Serverless the runtime sizes the driver and this value would be an inert
+    but misleading claim in the code.
+    """
+    builder = SparkSession.builder.appName("fare-prep").master(master)
+    if is_local_master(master):
+        builder = builder.config("spark.driver.memory", driver_mem)
     spark = (
-        SparkSession.builder
-        .appName("fare-prep")
-        .master("local[*]")
-        .config("spark.driver.memory", driver_mem)
+        builder
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.shuffle.partitions", "64")
         .getOrCreate()
@@ -90,7 +143,25 @@ def build_spark(driver_mem: str = "6g") -> SparkSession:
     return spark
 
 
-def load(spark: SparkSession, limit_files: int | None) -> DataFrame:
+def load(spark: SparkSession, limit_files: int | None,
+         source: str = LOCAL_SOURCE) -> DataFrame:
+    """Read `fact_trips` from the local parquet backup or from BigQuery.
+
+    Migration plan M4 runs both and requires them to agree — 128,408,323 rows
+    and the same p99 caps. Everything downstream of this function is identical
+    for the two, which is what makes that comparison worth anything.
+    """
+    if is_bigquery_table(source):
+        if limit_files is not None:
+            raise SystemExit(
+                "[error] --limit-files reads N parquet files and means nothing "
+                f"against a BigQuery table. Drop it, or use --source {LOCAL_SOURCE}."
+            )
+        print(f"[load] reading BigQuery table {source} through the connector")
+        # A direct table read streams through the Storage Read API and needs no
+        # materialisation dataset. `dbt_prod` stays read-only, per M4.
+        return spark.read.format("bigquery").option("table", source).load()
+
     files = sorted(str(p) for p in FACT_TRIPS_DIR.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(
@@ -186,21 +257,8 @@ def apply_caps(df: DataFrame, caps: dict) -> DataFrame:
 
 
 def select_model_columns(df: DataFrame) -> DataFrame:
-    keep = [
-        # target + raw reference
-        "fare_capped", "fare_amount",
-        # numeric predictors
-        "trip_distance", "distance_capped", "trip_duration_min",
-        "passenger_count", "temperature", "pickup_hour", "pickup_dow",
-        # categoricals
-        "service_type", "pickup_borough", "dropoff_borough",
-        "pickup_zone", "dropoff_zone", "temp_band",
-        # binary flag + raw ratecode for audit
-        "is_airport_trip", "ratecodeid",
-        # optional climate (precip confirmed null-effect; kept for exploration only)
-        "humidity", "windSpeed", "visibility",
-    ]
-    return df.select(*keep)
+    """Narrow to the modeling schema. The list lives in KEEP_COLS."""
+    return df.select(*KEEP_COLS)
 
 
 def stratified_sample(df: DataFrame, frac: float, seed: int) -> DataFrame:
@@ -211,7 +269,7 @@ def stratified_sample(df: DataFrame, frac: float, seed: int) -> DataFrame:
     return keyed.stat.sampleBy("_strata", fractions, seed).drop("_strata")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit-files", type=int, default=None,
                     help="read only the first N parquet files (fast dry-run)")
@@ -220,12 +278,40 @@ def main() -> None:
                     help="fraction of the FULL sample taken for the work sample")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--driver-mem", default="6g")
-    args = ap.parse_args()
+    # Required, no default (owner decision 2026-09-13). The local backup holds
+    # pre-D-012 data and the other source is a 300M-row BigQuery read; neither
+    # should start because someone left the flag off.
+    ap.add_argument("--source", required=True,
+                    help=f"'{LOCAL_SOURCE}' for the parquet backup (pre-D-012 "
+                         "data), or a fully-qualified project.dataset.table "
+                         "read through the BigQuery connector")
+    ap.add_argument("--output", default=DEFAULT_OUTPUT,
+                    help="directory for the two samples and prep_stats.json; "
+                         "a local path or a gs:// URI")
+    ap.add_argument("--cluster", action="store_true",
+                    help="use the Dataproc Serverless master instead of "
+                         "local[*] (plan M4)")
+    return ap
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    spark = build_spark(args.driver_mem)
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    # Refuse a half-recognised source rather than falling through to the local
+    # backup and reporting a row count for a table nobody asked for.
+    if args.source != LOCAL_SOURCE and not is_bigquery_table(args.source):
+        raise SystemExit(
+            f"[error] --source must be {LOCAL_SOURCE!r} or a fully-qualified "
+            f"project.dataset.table; got {args.source!r}. The project id is "
+            "required — see src/paths.is_bigquery_table."
+        )
+
+    if not is_remote_uri(args.output):
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+    spark = build_spark(args.driver_mem,
+                        spark_master(None) if args.cluster else "local[*]")
     try:
-        raw = load(spark, args.limit_files)
+        raw = load(spark, args.limit_files, args.source)
         total = raw.count()
         print(f"[count] raw rows: {total:,}")
 
@@ -241,13 +327,15 @@ def main() -> None:
 
         full = stratified_sample(model_df, args.full_frac, args.seed).cache()
         full_n = full.count()
-        full.repartition(8).write.mode("overwrite").parquet(str(OUT_DIR / "sample_full.parquet"))
-        print(f"[write] sample_full: {full_n:,} rows -> {OUT_DIR / 'sample_full.parquet'}")
+        full_uri = join_uri(args.output, "sample_full.parquet")
+        full.repartition(8).write.mode("overwrite").parquet(full_uri)
+        print(f"[write] sample_full: {full_n:,} rows -> {full_uri}")
 
         work = stratified_sample(full, args.work_frac, args.seed + 1)
         work_n = work.count()
-        work.repartition(2).write.mode("overwrite").parquet(str(OUT_DIR / "sample_work.parquet"))
-        print(f"[write] sample_work: {work_n:,} rows -> {OUT_DIR / 'sample_work.parquet'}")
+        work_uri = join_uri(args.output, "sample_work.parquet")
+        work.repartition(2).write.mode("overwrite").parquet(work_uri)
+        print(f"[write] sample_work: {work_n:,} rows -> {work_uri}")
 
         stats = {
             "raw_rows": total, "guarded_rows": kept,
@@ -255,9 +343,16 @@ def main() -> None:
             "full_frac": args.full_frac, "work_frac": args.work_frac,
             "seed": args.seed, "caps": caps,
             "limit_files": args.limit_files,
+            # M4 compares a cloud run against a laptop run. Which source the
+            # numbers came from is the first thing that comparison needs, and a
+            # stats file that does not say is a file you cannot check.
+            "source": args.source,
+            "output": args.output,
+            "master": spark.sparkContext.master,
         }
-        STATS_PATH.write_text(json.dumps(stats, indent=2))
-        print(f"[stats] wrote {STATS_PATH}")
+        stats_uri = join_uri(args.output, STATS_NAME)
+        write_text(spark, stats_uri, json.dumps(stats, indent=2))
+        print(f"[stats] wrote {stats_uri}")
         print("PREP OK")
     finally:
         spark.stop()

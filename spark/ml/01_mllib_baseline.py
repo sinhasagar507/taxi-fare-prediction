@@ -31,10 +31,25 @@ Run (from repo root):
     .venv/bin/python spark/ml/01_mllib_baseline.py --drop-corridor \
         --tag mllib_gbt_nocorr
 
-Outputs (per run, keyed by --tag):
-    spark/ml/results/leaderboard_<tag>.csv    one row, same shape as sklearn rows
-    spark/ml/results/sweep_<tag>.json         run metadata + provenance,
-                                              same convention as 01_run_sweep.py
+    # §5.4: the corridor encoded out-of-fold, outside MLlib (src/oof_encode.py)
+    .venv/bin/python spark/ml/01_mllib_baseline.py --oof --tag mllib_gbt_oof
+
+Run (Dataproc Serverless, migration plan M4):
+
+    gcloud dataproc batches submit pyspark spark/ml/01_mllib_baseline.py -- \
+        --cluster \
+        --input  gs://<bucket>/ml/samples/sample_work_train.parquet \
+        --output gs://<bucket>/ml/results
+
+`--input` and `--output` take a local path or a bucket URI, and `--cluster`
+swaps the local master for the Serverless one, `dataproc`. Those
+three flags are the whole difference between the two invocations; nothing about
+the model, the folds or the metrics changes with them.
+
+Outputs (per run, keyed by --tag, under --output):
+    leaderboard_<tag>.csv    one row, same shape as sklearn rows
+    sweep_<tag>.json         run metadata + provenance,
+                             same convention as 01_run_sweep.py
 
 Design notes:
   - `od_corridor` is **target-encoded**, not dropped. The 2026-08-08 run of this
@@ -46,6 +61,11 @@ Design notes:
   - Spark's `TargetEncoder` does **not** cross-fit, so a training row's own fare
     enters its own feature. `--smoothing` is the only lever against that; the
     default and the arithmetic behind it live in `src/mllib.py`.
+  - `--oof` replaces that encoder for migration plan §5.4. Each outer fold
+    encodes its train half out-of-fold over 5 inner folds and its test fold
+    from the whole train half (`src/oof_encode.encode_outer_fold`). The
+    pipeline then has no StringIndexer or TargetEncoder on `od_corridor` and
+    assembles `od_corridor_te` as a number. Same rows, folds and GBT settings.
   - Folds are k random groups at a fixed seed. They are NOT the sweep's folds:
     sklearn's `KFold(seed=42)` and anything Spark does at `seed=42` partition
     differently, because seeds do not cross library boundaries. Same k, same
@@ -87,34 +107,33 @@ from spark.ml.src.mllib import (  # noqa: E402
     METRIC_KEYS,
     MLLIB_EXCLUDED_COLUMNS,
     fold_metrics_to_row,
+    is_local_master,
+    is_remote_uri,
+    join_uri,
+    model_name,
     self_leakage_weight,
+    spark_master,
     split_column_groups,
+    write_text,
+)
+from spark.ml.src.oof_encode import (  # noqa: E402
+    DEFAULT_K as OOF_INNER_FOLDS,
+    ENCODED_COL as OOF_ENCODED_COL,
+    OUTER_FOLD_COL,
+    encode_outer_fold,
 )
 
 DATA_DIR = REPO_ROOT / "spark" / "ml" / "data"
 RESULTS_DIR = REPO_ROOT / "spark" / "ml" / "results"
-DEFAULT_INPUT = DATA_DIR / "sample_work_train.parquet"
+# Strings, not Paths. `Path("gs://b/x")` collapses the duplicate separator into
+# `gs:/b/x`, so a bucket URI cannot survive a round trip through pathlib — see
+# src/mllib.is_remote_uri. The local defaults are stringified here so both
+# invocations travel the same code path instead of only the laptop one.
+DEFAULT_INPUT = str(DATA_DIR / "sample_work_train.parquet")
+DEFAULT_OUTPUT = str(RESULTS_DIR)
 
-FOLD_COL = "_fold"
-
-
-def model_name(input_path: Path, n_rows: int, drop_corridor: bool = False) -> str:
-    """Leaderboard label carrying the pool it was trained on.
-
-    The row shares `evaluate()`'s key set so it sorts into the one leaderboard
-    beside sklearn rows — which means there is no column to record the sample
-    in. Per §5b the pool goes in the model string instead: adding a field would
-    break the shared-leaderboard contract. Rows are stamped from the actual row
-    count, so a `--limit-rows` smoke run cannot pass itself off as the real one.
-
-    Rows 2 and 3 of §5b differ only by a feature, so the name has to separate
-    them too. The unqualified `mllib_gbt` means the full-feature baseline; the
-    ablation carries `_nocorr`. The 2026-08-08 board claimed the unqualified
-    name for what is now the ablation, and was renamed when row 2 landed.
-    """
-    stem = input_path.stem.removeprefix("sample_").removesuffix("_train")
-    variant = "_nocorr" if drop_corridor else ""
-    return f"mllib_gbt{variant}@{stem}{n_rows // 1000}k"
+# `oof_encode` reads the same column, so there is one name for it.
+FOLD_COL = OUTER_FOLD_COL
 
 
 def build_pipeline(
@@ -229,10 +248,29 @@ def build_pipeline(
     )
 
 
+def input_label(input_uri: str) -> str:
+    """What the run metadata records as its input.
+
+    A repo-relative path when the file came from the working tree, so the
+    record survives a clone at a different absolute path; the URI verbatim
+    otherwise, because a bucket location has no repository to be relative to.
+    """
+    if is_remote_uri(input_uri):
+        return input_uri
+    try:
+        return str(Path(input_uri).resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return input_uri
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", type=Path, default=DEFAULT_INPUT,
-                    help="train split written by 01_run_sweep.py --write-train")
+    ap.add_argument("--input", default=DEFAULT_INPUT,
+                    help="train split written by 01_run_sweep.py --write-train; "
+                         "a local path or a gs:// URI")
+    ap.add_argument("--output", default=DEFAULT_OUTPUT,
+                    help="directory for leaderboard_<tag>.csv and "
+                         "sweep_<tag>.json; a local path or a gs:// URI")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=RANDOM_STATE)
     ap.add_argument("--max-iter", type=int, default=100,
@@ -244,6 +282,10 @@ def main() -> None:
                          "1/(1+smoothing). See src/mllib.self_leakage_weight.")
     ap.add_argument("--drop-corridor", action="store_true",
                     help="ablate od_corridor entirely — row 3 of plan §5b")
+    ap.add_argument("--oof", action="store_true",
+                    help="encode od_corridor out-of-fold outside MLlib, in "
+                         "place of StringIndexer + TargetEncoder — migration "
+                         "plan §5.4")
     ap.add_argument("--limit-rows", type=int, default=None,
                     help="seeded row subset for a fast wiring check")
     # Measured peak heap on the full 612,608-row split is 0.82 GiB with the
@@ -254,29 +296,41 @@ def main() -> None:
     # minutes this takes, and the job is not CPU-starved at 8.
     ap.add_argument("--cores", type=int, default=8,
                     help="local Spark threads (default 8; 0 = all cores)")
+    # Not a variant of --cores 0. A local master on Dataproc Serverless runs the
+    # whole job inside the driver while every allocated executor sits idle — a
+    # wrong answer that looks like a slow one. Leaving the master unset does
+    # the same: the runtime's own default is `local` (mllib.spark_master).
+    ap.add_argument("--cluster", action="store_true",
+                    help="use the Dataproc Serverless master instead of "
+                         "local[n] (plan M4)")
     ap.add_argument("--tag", default="mllib_gbt")
     args = ap.parse_args()
 
-    if not args.input.exists():
+    if not is_remote_uri(args.input) and not Path(args.input).exists():
         raise SystemExit(
             f"[error] {args.input} not found — write it first with:\n"
             "        python spark/ml/01_run_sweep.py --write-train "
             "--only ridge --folds 2 --tag worksplit"
         )
 
+    master = spark_master(None if args.cluster else args.cores)
+    builder = SparkSession.builder.appName("mllib-gbt-baseline").master(master)
+    if is_local_master(master):
+        # Driver memory is a launch-time setting too, so it belongs with the
+        # local master. On Serverless the runtime sizes the driver and this
+        # value would be an inert but misleading claim in the code.
+        builder = builder.config("spark.driver.memory", args.driver_memory)
     spark = (
-        SparkSession.builder.appName("mllib-gbt-baseline")
-        .master("local[*]" if args.cores == 0 else f"local[{args.cores}]")
-        .config("spark.driver.memory", args.driver_memory)
-        # 200 shuffle partitions is the cluster default and pure overhead on a
-        # single machine at this row count.
+        builder
+        # 200 shuffle partitions is the cluster default and pure overhead at
+        # this row count on any executor count we run here.
         .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
     try:
-        df = spark.read.parquet(str(args.input))
+        df = spark.read.parquet(args.input)
         if args.limit_rows is not None:
             # Plain head, not a re-sample: the file was written in
             # train_test_split's shuffled order, so the first n rows are
@@ -285,8 +339,13 @@ def main() -> None:
             df = df.limit(args.limit_rows)
 
         feature_columns = [c for c in df.columns if c != TARGET]
+        if args.oof:
+            # The encoder adds this column inside the fold loop, per outer fold.
+            feature_columns.append(OOF_ENCODED_COL)
         categorical, target_encoded, numeric, unrecognised = split_column_groups(
-            feature_columns, drop_target_encoded=args.drop_corridor
+            feature_columns,
+            drop_target_encoded=args.drop_corridor,
+            oof_encoded=args.oof,
         )
 
         # Say what was dropped. A silent drop and a silent include are both
@@ -298,6 +357,10 @@ def main() -> None:
         print(f"[cols] excluded by design: {list(MLLIB_EXCLUDED_COLUMNS)}")
         if args.drop_corridor:
             print("[cols] od_corridor ABLATED by --drop-corridor (plan §5b row 3)")
+        if args.oof:
+            print(f"[cols] od_corridor OUT-OF-FOLD encoded -> {OOF_ENCODED_COL}, "
+                  f"{OOF_INNER_FOLDS} inner folds per outer train half "
+                  "(migration plan §5.4)")
         if unrecognised:
             print(f"[cols] !! UNRECOGNISED, not used as features: {unrecognised}")
 
@@ -309,10 +372,17 @@ def main() -> None:
         ).cache()
         n_rows = df.count()  # materialises the cache, fixing the fold assignment
 
-        name = model_name(args.input, n_rows, drop_corridor=args.drop_corridor)
-        print(f"[data] {args.input.name}: {n_rows:,} rows -> {name}")
+        name = model_name(
+            args.input, n_rows, drop_corridor=args.drop_corridor, oof=args.oof
+        )
+        print(f"[data] {args.input}: {n_rows:,} rows -> {name}")
+        print(f"[spark] master={master or spark.sparkContext.master} "
+              f"defaultParallelism={spark.sparkContext.defaultParallelism}")
         print(f"[cv]   {args.folds} folds, seed={args.seed}, "
               f"GBT maxIter={args.max_iter} maxDepth={args.max_depth}")
+        if args.oof:
+            print(f"[te]   out-of-fold, smoothing={args.smoothing}: a training "
+                  "row never reads back its own fare")
         if target_encoded:
             # State the leakage bound the smoothing buys, at the point of use.
             # Spark's TargetEncoder does not cross-fit, so this number is the
@@ -329,6 +399,9 @@ def main() -> None:
             args.max_depth,
             args.smoothing,
         )
+        # The stage list is the evidence that an OOF run fitted no TargetEncoder.
+        print("[cols] stages: "
+              f"{[type(stage).__name__ for stage in pipeline.getStages()]}")
         evaluators = {
             key: RegressionEvaluator(
                 labelCol=TARGET, predictionCol="prediction", metricName=key
@@ -336,11 +409,28 @@ def main() -> None:
             for key in METRIC_KEYS
         }
 
-        fold_metrics, fit_times = [], []
+        fold_metrics, fit_times, encode_times = [], [], []
         started = time.time()
         for fold in range(args.folds):
-            train = df.filter(F.col(FOLD_COL) != fold).drop(FOLD_COL)
-            test = df.filter(F.col(FOLD_COL) == fold).drop(FOLD_COL)
+            encode_note = ""
+            if args.oof:
+                # Both halves are encoded from this fold's train half only, off
+                # the cached `_fold` above. Cached and counted here so the
+                # encoding runs once, not once per GBT pass and per evaluator,
+                # and so its time is kept apart from the fit's.
+                t0 = time.time()
+                train, test = encode_outer_fold(
+                    df, fold, fold_col=FOLD_COL, k=OOF_INNER_FOLDS,
+                    smoothing=args.smoothing,
+                )
+                train, test = train.cache(), test.cache()
+                train.count()
+                test.count()
+                encode_times.append(time.time() - t0)
+                encode_note = f" encode={encode_times[-1]:.1f}s"
+            else:
+                train = df.filter(F.col(FOLD_COL) != fold).drop(FOLD_COL)
+                test = df.filter(F.col(FOLD_COL) == fold).drop(FOLD_COL)
 
             t0 = time.time()
             model = pipeline.fit(train)
@@ -351,22 +441,25 @@ def main() -> None:
             fold_metrics.append(metrics)
             print(f"[fold {fold}] mae={metrics['mae']:.4f} "
                   f"rmse={metrics['rmse']:.4f} r2={metrics['r2']:.4f} "
-                  f"fit={fit_times[-1]:.1f}s")
+                  f"fit={fit_times[-1]:.1f}s{encode_note}")
+            if args.oof:
+                train.unpersist()
+                test.unpersist()
         elapsed = time.time() - started
 
         row = fold_metrics_to_row(name, fold_metrics, fit_times)
 
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        board_path = RESULTS_DIR / f"leaderboard_{args.tag}.csv"
+        board_uri = join_uri(args.output, f"leaderboard_{args.tag}.csv")
         import pandas as pd  # local: keeps the Spark path pandas-free until now
 
-        pd.DataFrame([row]).to_csv(board_path, index=False)
+        write_text(spark, board_uri, pd.DataFrame([row]).to_csv(index=False))
 
         meta = {
             "tag": args.tag,
             "model": name,
             "stack": "spark-mllib",
-            "input": str(args.input.relative_to(REPO_ROOT)),
+            "input": input_label(args.input),
+            "output": args.output,
             "rows": n_rows,
             "features": {
                 "categorical": categorical,
@@ -379,8 +472,18 @@ def main() -> None:
                 # sklearn cross-fits inside fit_transform; Spark does not. This
                 # is the residual difference §5b reports as a Tier-2 finding.
                 "singleton_self_weight": self_leakage_weight(1, args.smoothing),
-            } if target_encoded else None,
+            } if target_encoded else {
+                "smoothing": args.smoothing,
+                "cross_fitted": True,
+                "method": "out-of-fold, spark/ml/src/oof_encode.py",
+                "inner_folds": OOF_INNER_FOLDS,
+                "inner_fold_key": "crc32 over the feature columns",
+                "encoded_column": OOF_ENCODED_COL,
+                "singleton_self_weight": 0.0,
+                "mean_encode_s": sum(encode_times) / len(encode_times),
+            } if args.oof else None,
             "corridor_ablated": args.drop_corridor,
+            "oof_encoded": args.oof,
             "excluded_by_design": list(MLLIB_EXCLUDED_COLUMNS),
             "unrecognised_columns": unrecognised,
             "folds": args.folds,
@@ -391,15 +494,21 @@ def main() -> None:
             "gbt": {"maxIter": args.max_iter, "maxDepth": args.max_depth},
             "elapsed_s": round(elapsed, 1),
             "spark": spark.version,
+            # Recorded because the cloud run and the laptop run differ here and
+            # nowhere else that matters: defaultParallelism fixes the read
+            # partitioning, which fixes fold membership. Two runs of this script
+            # agree to full precision only when this number agrees.
+            "master": spark.sparkContext.master,
+            "default_parallelism": spark.sparkContext.defaultParallelism,
             "python": platform.python_version(),
             "platform": platform.platform(),
         }
-        meta_path = RESULTS_DIR / f"sweep_{args.tag}.json"
-        meta_path.write_text(json.dumps(meta, indent=2))
+        meta_uri = join_uri(args.output, f"sweep_{args.tag}.json")
+        write_text(spark, meta_uri, json.dumps(meta, indent=2))
 
         print(pd.DataFrame([row]).to_string(index=False))
-        print(f"[write] {board_path}")
-        print(f"[write] {meta_path}")
+        print(f"[write] {board_uri}")
+        print(f"[write] {meta_uri}")
         print(f"[time] {elapsed:.1f}s")
         print("MLLIB BASELINE OK")
     finally:

@@ -66,7 +66,7 @@ class TestNYCTaxiYellowDAG:
         assert dag.schedule_interval == '0 6 1 * *'  # Monthly at 6 AM
         assert dag.max_active_runs == 1
         assert dag.catchup is True
-        assert 'dtc-de' in dag.tags
+        assert 'nyc-taxi' in dag.tags
         
         # AND: Default args should be set correctly
         assert dag.default_args['owner'] == 'airflow'

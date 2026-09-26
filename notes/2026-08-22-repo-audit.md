@@ -27,27 +27,39 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
 
 ## B. Vision gaps
 
-- [~] 4. Identity mismatch: repo name + README say **duration**; the locked modeling
+- [x] 4. Identity mismatch: repo name + README say **duration**; the locked modeling
       target is **fare** (`fare_capped`); `CASE_STUDY.md` (Jun 3) predates the pivot.
       **Done 2026-08-22:** the CLAUDE.md "Project" section and the README are reoriented
       to fare (title, intro, diagram, `spark/` tree, plus a note explaining the pivot).
       **Remaining:** `CASE_STUDY.md` waits for modeling Phase 5 — see D-005 in
       `notes/decisions.md`. The folder name stays; the README pivot note carries it.
-- [ ] 5. GCP target decision missing: no project is provisioned, so Airflow/dbt/
+      **Done 2026-09-26:** Phase 5 scored the holdout, D-005 was reopened and closed, and
+      the case study is rewritten to fare at `notes/CASE_STUDY.md`.
+- [x] 5. GCP target decision missing: no project is provisioned, so Airflow/dbt/
       Terraform/BQ cannot run end-to-end and the §5c cloud run has no target. Record a
       decision: provision a project, build a local substitute, or archive-as-reference.
       *Rider (2026-08-22):* the decision settles the "Deployment split" subsection in
       CLAUDE.md — keep it if the GCP design continues, else move it to
       `notes/gcp-reference.md` and keep only the no-keyfiles auth rule.
-- [ ] 6. Three workstreams (pipeline docs, ML sweep, dashboard v3) with no priority
+      **Done 2026-09-26.** Decided "provision" in `notes/2026-09-02-gcp-cloud-migration-plan.md`
+      (2026-09-02) and carried through M5: the Airflow stack ran the zone DAG and its
+      external-table DAG on a GCE VM with ADC. The design continues, so the Deployment split
+      stays in CLAUDE.md (D-006 closed), and CLAUDE.md's "not provisioned" section is replaced.
+- [x] 6. Three workstreams (pipeline docs, ML sweep, dashboard v3) with no priority
       order. Write the order down.
+      **Done 2026-09-26.** The order, per the migration plan M6: the migration through M3 →
+      modeling §5 encoder + §5c → dashboard v3. The first two are complete (M3 2026-09-12,
+      §5c RESCALE 2026-09-26, Phase 5's holdout 2026-09-26, M5 2026-09-26). **Next: the
+      dashboard v3, owner-built.**
 
 ## C. Plan-of-action gaps
 
 - [ ] 7. Branch scope: `refactor/wire-pipeline` now carries the entire ML program.
       Decide how to split future work into smaller branches.
-- [ ] 8. Two plans, no single next-step list: CLAUDE.md's phase plan and the spark
+- [x] 8. Two plans, no single next-step list: CLAUDE.md's phase plan and the spark
       modeling plan don't point at each other. Add cross-links / one "next" pointer.
+      **Done 2026-09-26.** One pointer: CLAUDE.md → the migration plan Status → the modeling
+      plan Status.
 
 ## D. Implementation drawbacks
 
@@ -73,7 +85,7 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       guard in `test_docker_runtime.py` stays — it costs nothing and still catches a
       restore. Docs updated in CLAUDE.md, `notes/gcp-reference.md`, the runbook (since
       renamed `notes/gcp-setup-runbook.md`) and the modeling plan.
-- [~] 11. Loose root documents (`2026-05-24-Dashboard-development-plan-v3.md`,
+- [x] 11. Loose root documents (`2026-05-24-Dashboard-development-plan-v3.md`,
       `project-status-phase5.pdf`, `MIGRATION_RUNBOOK.md`, `CASE_STUDY.md`) have no
       home. Relocate to `notes/`.
       **Three of four done 2026-09-01.** The dashboard plan, the runbook and the status
@@ -85,6 +97,8 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
       it untouched until modeling Phase 5 scores the sealed holdout. Moving it is not a
       rewrite, but the entry says *untouched*, and the file's fate — rewrite or delete —
       is decided by that same phase. Move it then, in the change that settles it.
+      **Done 2026-09-26:** moved to `notes/CASE_STUDY.md` in the rewrite commit, and
+      indexed in `notes/README.md`.
 - [x] 12. Known model defect unassigned: design matrix rank 25/27 (dummy trap,
       cond ≈ 4e15), coefficients unstable. Assign it a phase in the modeling plan.
       **Closed 2026-09-01 — the defect was already fixed.** `fc87020` (2026-08-01) added
@@ -101,7 +115,7 @@ off here when done. The three standing Deferred items in CLAUDE.md (PR,
 ## Attack order
 
 1. ✅ Items 1–3 (git state) — one short cleanup session. Item 2 is the owner's to finish.
-2. ⬜ Items 5–6 + 8 — one decision document. **Still open.**
+2. ✅ Items 5–6 + 8 — one decision document, the migration plan. Closed 2026-09-26 (M6).
 3. ✅ Item 4 — docs reconciliation. `CASE_STUDY.md` waits on D-005.
 4. ✅ Items 9–11 — prune + relocate. Done 2026-09-01. `CASE_STUDY.md` held by D-005.
 5. ✅ Resume the modeling plan at MLlib row 2 (Phase 4b §5b); item 12 rides along there.
@@ -143,3 +157,73 @@ per-step review gate was suspended for that session only; nothing was pushed).
 
 Tests: 257 unit passed, 1 skipped. The 9 integration failures are pre-existing — they
 need a provisioned GCP project, and fail identically before and after this session.
+
+## SCRUB — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after CLOSEOUT. It removes every mention of the
+course this project began in from the tracked repository. It is stored as accepted, with
+one change, stated here: the goal's search pattern names the two course words, and a
+verbatim copy would make this note the one match the goal forbids. Each of its three
+occurrences reads `<course-words>` below. The pattern is the course's name in lower case
+and the organiser's name in lower case, joined by `|`. For the same reason, the two quoted
+occurrences of the old DAG tag read `'<old-tag>'`; the old tag is `dtc-de`, in single
+quotes.
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | Named mentions in the project documents | **Remove them** from `CLAUDE.md`, `README.md` and `notes/CASE_STUDY.md` | No course mention in the README or anywhere in the code |
+| 2 | The inherited lesson notes (`notes/1_intro.md` … `6_streaming.md`, `extra1_preparing_data.md`, `notes/images/`) | **Untrack them, gitignore them, keep them on the owner's disk** | Material unrelated to running the project does not belong in `origin` |
+| 3 | Rejected for 2 | Delete the files; or strip only the words | The owner keeps the notes locally; a word-level edit leaves course material in the repository |
+| 4 | The `dtc` abbreviation | **Rename the DAG tag `dtc-de` to `nyc-taxi`; keep the live GCP names** | Renaming the project, bucket or service account means new cloud resources |
+| 5 | Git history | **Out of scope** | Old commits still hold the lesson files; only a history rewrite removes them |
+
+Measured while the goal was written, 2026-09-26: 56 staged deletions (7 lesson files, 49
+images); `git ls-files notes` 11; the `dtc-de` tag at four DAG lines and two legacy stubs;
+gate host 415 passed, 2 skipped, container 430 passed, 1 skipped. Re-measured at step 1:
+the same gate on both, HEAD `c2360d2`.
+
+<details><summary>The SCRUB goal command</summary>
+
+```text
+Remove every course mention from the tracked repository: finish the staged scrub, rename the DAG tag dtc-de, commit. MET only when the transcript shows a final report headed "SCRUB DONE" with all of:
+(a) note: the SCRUB decisions + this goal in notes/2026-08-22-repo-audit.md, committed alone;
+(b) git grep -nIi -E "<course-words>" returns nothing; git ls-files notes shows 11 files; the 7 lesson files + 49 images still on disk and git check-ignore'd;
+(c) tag: git grep -nI "'<old-tag>'" returns nothing; 4 DAGs and 2 airflow/tests stubs say 'nyc-taxi';
+(d) the live GCP names unchanged (dtc-de-project-506916, primary-data-dtc-506916, dtc-de-course@);
+(e) commits: note, scrub, tag; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "SCRUB STOPPED:". Stop after 20 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Owner decisions 2026-09-26: no course mention in the README or anywhere in the code; untrack the course notes, gitignore them, keep them locally; rename the DAG tag only, keep the GCP names.
+- HEAD c2360d2, refactor/wire-pipeline, 11 commits ahead of origin.
+- Staged: 56 deletions (notes/1_intro.md, 2_data_ingestion.md, 3_data_warehouse.md, 4_analytics.md, 5_batch_processing.md, 6_streaming.md, extra1_preparing_data.md, notes/images/ 49 files); .gitignore (8 new paths); notes/README.md (Course notes section cut).
+- Unstaged: CLAUDE.md:43, README.md:3, notes/CASE_STUDY.md:11 mentions removed. CLAUDE.md 222 lines.
+- git grep <course-words>: no match. git ls-files notes: 11.
+- Tag '<old-tag>': airflow/dags/nyc_climate_gcs_dag.py:120, nyc_taxi_gcs_green_dag.py:89, nyc_taxi_gcs_yellow_dag.py:89, nyc_taxi_zone_gcs_dag.py:78; airflow/tests/test_nyc_climate_dag.py:73, test_nyc_taxi_yellow_dag.py:69 (legacy stubs, not in the gate).
+- tests/unit/test_stale_ids.py and tests/unit/dags/test_dag_config.py match the dtc-de- project-ID pattern; they are not the tag. Leave them.
+- Gate: host 415 passed, 2 skipped (2026-09-26, with the staged scrub); container 430 passed, 1 skipped (2026-09-26, c2360d2).
+- Git history still holds the files; a rewrite is out of scope.
+
+STEPS
+1. Gate both. Write the SCRUB section (decisions table + this goal in <details>) into the audit note. Commit that path only.
+2. Stage CLAUDE.md, README.md, notes/CASE_STUDY.md with the staged scrub. Check (b). Commit.
+3. Rename the tag in the 4 DAGs and 2 stubs. Check (c), (d). Commit.
+4. Final gate. Print "SCRUB DONE" with (a)-(e); next = README reconciliation to D-012 counts.
+
+PRINT "SCRUB STOPPED: <reason>" AND END WHEN
+- a lesson file or image is missing from disk, or not ignored;
+- a file outside FACTS would be deleted, untracked or edited;
+- a <course-words> match remains after step 2;
+- a new test fails;
+- a live GCP name would change;
+- a conflict with a LOCKED entry;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud calls. No history rewrite. Delete no file from disk.
+- Out of scope: the README trip counts, the dashboard, dbt edits, terraform, the PR, a push.
+```
+
+</details>

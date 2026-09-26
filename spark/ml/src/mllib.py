@@ -36,6 +36,8 @@ Spark baseline sorts into the one leaderboard next to the sklearn sweep instead
 of living in a parallel table.
 """
 
+from pathlib import Path
+
 import numpy as np
 
 from .features import CATEGORICAL_COLUMNS
@@ -50,6 +52,13 @@ MLLIB_EXCLUDED_COLUMNS: tuple[str, ...] = ()
 # list so the two stacks cannot drift into encoding different columns — that is
 # the §5b parity rule, and it is the whole basis of the comparison.
 MLLIB_TARGET_ENCODED_COLUMNS = tuple(TARGET_ENCODED_COLUMNS)
+
+# The out-of-fold path (migration plan §5.3, `oof_encode.py`) encodes each
+# target-encoded column outside MLlib into `<column>_te`, a plain double the
+# assembler takes as a number. The inner fold column it assigns on the way
+# never reaches the model.
+MLLIB_OOF_ENCODED_COLUMNS = tuple(f"{c}_te" for c in MLLIB_TARGET_ENCODED_COLUMNS)
+OOF_FOLD_COLUMN = "oof_fold"
 
 # The low-cardinality categoricals MLlib can afford to one-hot: the Phase-2
 # categorical list minus the target-encoded corridor. Derived from
@@ -88,9 +97,178 @@ MLLIB_NUMERIC_COLUMNS = tuple(dict.fromkeys([*NUMERIC_COLUMNS, *BINARY_COLUMNS])
 # The three metrics every model in this project reports (evaluate.compute_metrics).
 METRIC_KEYS = ("mae", "rmse", "r2")
 
+# Schemes Spark opens through a Hadoop FileSystem rather than the local disk.
+# An explicit tuple, not a regex over "anything://": an unlisted or misspelled
+# scheme should read as a local path and fail with a missing file, which names
+# the problem, rather than reach Spark as a filesystem nobody configured.
+REMOTE_URI_SCHEMES: tuple[str, ...] = (
+    "gs://",
+    "s3://",
+    "s3a://",
+    "hdfs://",
+    "abfss://",
+    "wasbs://",
+)
+
+
+def is_remote_uri(path) -> bool:
+    """True when Spark must open `path` through a bucket filesystem.
+
+    The script needs this because `pathlib` cannot carry a bucket URI:
+    `Path("gs://b/x")` collapses the duplicate separator and stringifies back
+    to `gs:/b/x`, which Spark reads as a relative path. So the input and output
+    locations stay strings, and the three jobs `Path` used to do — classify,
+    stem, join — are the three functions below.
+    """
+    return str(path).startswith(REMOTE_URI_SCHEMES)
+
+
+def uri_stem(path) -> str:
+    """The filename stem of a local path or a bucket URI, matching `Path.stem`.
+
+    `model_name()` builds the leaderboard label from this, so a cloud run and a
+    laptop run of the same file have to produce the same label. Otherwise one
+    input lands in the leaderboard twice under two names, and the table stops
+    meaning what it says.
+
+    A trailing slash is ignored, because a partitioned parquet *directory* is an
+    ordinary Spark input and must not stem to the empty string.
+    """
+    name = str(path).rstrip("/").rsplit("/", 1)[-1]
+    base, dot, _suffix = name.rpartition(".")
+    # `base` is empty for a dotfile (".bashrc"), where the dot is not a suffix
+    # separator. `Path.stem` keeps the whole name there; so does this.
+    return base if (dot and base) else name
+
+
+def join_uri(base, name: str) -> str:
+    """Join an output directory to a filename, for a local path or a bucket URI.
+
+    `os.path.join` would serve for the local half only; this keeps one code
+    path. `rstrip` handles a caller who supplied the trailing slash without
+    producing the doubled separator that a bucket treats as a real empty path
+    segment.
+    """
+    return f"{str(base).rstrip('/')}/{name}"
+
+
+# The master Dataproc Serverless runtime 3.0 declares in its own
+# spark-defaults.conf. The service then appends `spark.master=local` after it
+# and exports MASTER=local, so a job that sets no master runs on one driver
+# thread with zero executors. Measured 2026-09-13: probe-master-20260913a set
+# none and got `local`, defaultParallelism 1, 0 executors; -20260913b set this
+# and got 2 executors, with every task on a worker host. Why the service
+# injects `local` is not known — only that it does.
+DATAPROC_SERVERLESS_MASTER = "dataproc"
+
+
+def spark_master(cores):
+    """The `.master()` argument. Always a string; always set it.
+
+    None is the cluster case, and it names `DATAPROC_SERVERLESS_MASTER`
+    explicitly. It once meant "do not set one, the master arrives in the
+    environment". On Serverless the environment's master is `local`, so every
+    --cluster batch before 2026-09-13 ran inside the driver and billed no
+    executor.
+
+    For a local run `cores` is not a performance knob. It fixes
+    `defaultParallelism`, which fixes the read partitioning, which fixes fold
+    membership — the reason the 2026-09-02 parity run reproduced to full float64
+    precision instead of only to fold noise. 0 means every core.
+    """
+    if cores is None:
+        return DATAPROC_SERVERLESS_MASTER
+    if cores < 0:
+        raise ValueError(
+            f"cores must be non-negative or None, got {cores} — Spark accepts "
+            "local[-1] and then fails deep inside the scheduler"
+        )
+    return "local[*]" if cores == 0 else f"local[{cores}]"
+
+
+def is_local_master(master: str) -> bool:
+    """True for `local`, `local[n]` and `local[*]`.
+
+    Driver memory is a launch-time setting, so the scripts set it with a local
+    master only. On Serverless the runtime sizes the driver, and the value
+    would be an inert but misleading claim in the code.
+    """
+    return master == "local" or master.startswith("local[")
+
+
+def write_text(spark, uri, text: str) -> None:
+    """Write one small text artifact to a local path or a bucket URI.
+
+    Used by both M4 scripts — `01_mllib_baseline.py` for the leaderboard row and
+    the run metadata, `00_prep_spark.py` for `prep_stats.json`.
+
+    `spark` is a parameter rather than an import, so this module keeps the
+    no-pyspark contract in its docstring and the local branch needs no
+    SparkSession at all: pass None for a local write.
+
+    Local goes through pathlib. Remote goes through the JVM's Hadoop
+    FileSystem, which every Spark deployment already has configured, for two
+    reasons. Adding `gcsfs` so pandas could write `gs://` would put a Python
+    dependency on the managed runtime that we have not verified is there. And
+    `spark.write` would turn one named file into a directory of part files,
+    changing the artifact shape `evaluate.leaderboard()` reads — the cloud run
+    has to produce the same files as the laptop run, or the comparison M4
+    exists to make is comparing two different things.
+    """
+    if not is_remote_uri(uri):
+        path = Path(uri)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+
+    jvm = spark.sparkContext._jvm
+    hadoop_path = jvm.org.apache.hadoop.fs.Path(uri)
+    fs = hadoop_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    stream = fs.create(hadoop_path, True)  # True = overwrite
+    try:
+        stream.write(bytearray(text.encode("utf-8")))
+    finally:
+        stream.close()
+
+
+def _corridor_variant(drop_corridor: bool, oof: bool, drop_name: str) -> str:
+    """"_nocorr", "_oof" or "": the one place the two corridor flags meet."""
+    if drop_corridor and oof:
+        raise ValueError(
+            f"{drop_name} and oof cannot both be set — one removes the corridor, "
+            "the other encodes it"
+        )
+    return "_nocorr" if drop_corridor else "_oof" if oof else ""
+
+
+def model_name(
+    input_uri: str, n_rows: int, drop_corridor: bool = False, oof: bool = False
+) -> str:
+    """Leaderboard label carrying the pool it was trained on.
+
+    The row shares `evaluate()`'s key set so it sorts into the one leaderboard
+    beside sklearn rows — which means there is no column to record the sample
+    in. Per §5b the pool goes in the model string instead: adding a field would
+    break the shared-leaderboard contract. Rows are stamped from the actual row
+    count, so a `--limit-rows` smoke run cannot pass itself off as the real one.
+
+    Rows 2 and 3 of §5b and the §5.4 OOF row differ only in how the corridor
+    reaches the model, so the name separates them. The unqualified `mllib_gbt`
+    is the full-feature baseline with Spark's TargetEncoder; the ablation
+    carries `_nocorr`; the out-of-fold encoding carries `_oof`. The 2026-08-08
+    board claimed the unqualified name for what is now the ablation, and was
+    renamed when row 2 landed.
+    """
+    variant = _corridor_variant(drop_corridor, oof, "drop_corridor")
+    # `uri_stem`, not `Path.stem`: the same file read from GCS and from disk
+    # has to produce the same label, or one input lands in the leaderboard
+    # twice under two names.
+    stem = uri_stem(input_uri).removeprefix("sample_").removesuffix("_train")
+    return f"mllib_gbt{variant}@{stem}{n_rows // 1000}k"
+
 
 def split_column_groups(
-    columns, drop_target_encoded: bool = False
+    columns, drop_target_encoded: bool = False, oof_encoded: bool = False
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Split a feature frame's columns into (categorical, target_encoded, numeric, unrecognised).
 
@@ -118,19 +296,31 @@ def split_column_groups(
     warning that fires on every ordinary run is one people stop reading.
     Likewise a deliberately ablated corridor is not called unrecognised: that
     drop is a documented §5b result, not a surprise.
+
+    `oof_encoded=True` is the §5.4 run. The corridor arrives already encoded
+    out-of-fold as `od_corridor_te`, which goes in `numeric`, so the pipeline
+    builds no StringIndexer and no TargetEncoder for it. The raw `od_corridor`
+    and the inner `oof_fold` are known and deliberately unused. Without this
+    flag both new columns read as unrecognised and the raw corridor stays
+    target-encoded — an "OOF" run that trains the old encoder.
     """
+    _corridor_variant(drop_target_encoded, oof_encoded, "drop_target_encoded")
     kept = [c for c in columns if c not in MLLIB_EXCLUDED_COLUMNS]
     categorical = sorted(c for c in kept if c in MLLIB_CATEGORICAL_COLUMNS)
     target_encoded = (
         []
-        if drop_target_encoded
+        if drop_target_encoded or oof_encoded
         else sorted(c for c in kept if c in MLLIB_TARGET_ENCODED_COLUMNS)
     )
-    numeric = sorted(c for c in kept if c in MLLIB_NUMERIC_COLUMNS)
+    numeric_allowed = set(MLLIB_NUMERIC_COLUMNS) | (
+        set(MLLIB_OOF_ENCODED_COLUMNS) if oof_encoded else set()
+    )
+    numeric = sorted(c for c in kept if c in numeric_allowed)
     known = (
         set(MLLIB_CATEGORICAL_COLUMNS)
         | set(MLLIB_TARGET_ENCODED_COLUMNS)
-        | set(MLLIB_NUMERIC_COLUMNS)
+        | numeric_allowed
+        | ({OOF_FOLD_COLUMN} if oof_encoded else set())
     )
     unrecognised = sorted(c for c in kept if c not in known)
     return categorical, target_encoded, numeric, unrecognised

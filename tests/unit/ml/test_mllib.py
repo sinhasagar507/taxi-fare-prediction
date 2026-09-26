@@ -149,6 +149,53 @@ class TestColumnGroups:
     def test_empty_column_list_gives_four_empty_groups(self):
         assert mllib.split_column_groups([]) == ([], [], [], [])
 
+    def test_oof_and_the_ablation_together_are_refused(self):
+        """`--oof` encodes the corridor and `--drop-corridor` removes it. Both at
+        once has no meaning, and silently taking either would mislabel the run."""
+        with pytest.raises(ValueError, match="drop_target_encoded"):
+            mllib.split_column_groups(
+                WORK_FEATURES, drop_target_encoded=True, oof_encoded=True
+            )
+
+
+# ---------------------------------------------------------------------------
+# The leaderboard label — the pool, and which corridor variant ran
+# ---------------------------------------------------------------------------
+
+class TestModelName:
+    """Break 5 of the D-012 re-base (migration plan §5.4).
+
+    The label is the only field that tells rows 2, 3 and the §5.4 OOF row apart
+    in the shared leaderboard. A `model_name` that knows only `_nocorr` gives
+    the OOF row row 2's label, and the §5.4 comparison then reads one row
+    against itself.
+    """
+
+    INPUT = "spark/ml/data/sample_work_train.parquet"
+    ROWS = 1_355_641
+
+    def test_oof_run_is_labelled_oof(self):
+        assert mllib.model_name(self.INPUT, self.ROWS, oof=True) == "mllib_gbt_oof@work1355k"
+
+    def test_ablation_is_labelled_nocorr(self):
+        assert (
+            mllib.model_name(self.INPUT, self.ROWS, drop_corridor=True)
+            == "mllib_gbt_nocorr@work1355k"
+        )
+
+    def test_baseline_label_is_unqualified(self):
+        """Row 2's label, `mllib_gbt@work1355k`, is on the board already."""
+        assert mllib.model_name(self.INPUT, self.ROWS) == "mllib_gbt@work1355k"
+
+    def test_bucket_and_local_inputs_share_one_label(self):
+        assert mllib.model_name(
+            "gs://b/ml/samples/sample_work_train.parquet", self.ROWS, oof=True
+        ) == mllib.model_name(self.INPUT, self.ROWS, oof=True)
+
+    def test_oof_and_the_ablation_together_are_refused(self):
+        with pytest.raises(ValueError, match="drop_corridor"):
+            mllib.model_name(self.INPUT, self.ROWS, drop_corridor=True, oof=True)
+
 
 # ---------------------------------------------------------------------------
 # Unrecognised columns — the allowlist, and saying what it dropped
@@ -391,3 +438,191 @@ class TestFoldMetricsToRow:
     def test_missing_metric_key_raises(self):
         with pytest.raises((KeyError, ValueError)):
             mllib.fold_metrics_to_row("m", [{"mae": 0.2, "rmse": 1.0}], [10.0])
+
+
+# ---------------------------------------------------------------------------
+# Remote I/O — running the same script on a laptop and on Dataproc Serverless
+# ---------------------------------------------------------------------------
+
+class TestRemoteIO:
+    """`01_mllib_baseline.py` has to read `gs://` on Dataproc and a local file
+    on the laptop, from one code path.
+
+    The motivating bug is `pathlib`. The script types `--input` as `Path`, and
+    `Path` normalises a duplicate separator away, so a bucket URI silently
+    becomes a relative-looking path that Spark cannot open. The check the
+    script does next, `args.input.exists()`, then fails on a URI that was
+    perfectly valid — the failure names a missing file rather than the real
+    cause. So URIs stay strings, and the three things the script used `Path`
+    for — telling remote from local, taking a stem for the model name, and
+    joining an output filename — become explicit helpers here.
+
+    The Spark master is the same story in the other direction. Locally the
+    script pins `local[8]`, which fixes `defaultParallelism` and therefore the
+    fold partitioning that the 2.4 parity run depended on. On a cluster that
+    setting must be absent, or the batch runs single-node inside the driver.
+    """
+
+    # -- remote vs local ---------------------------------------------------
+
+    def test_gs_uri_is_remote(self):
+        assert mllib.is_remote_uri("gs://primary-data-dtc-506916/ml/x.parquet")
+
+    def test_local_absolute_path_is_not_remote(self):
+        assert not mllib.is_remote_uri("/repo/spark/ml/data/x.parquet")
+
+    def test_local_relative_path_is_not_remote(self):
+        assert not mllib.is_remote_uri("spark/ml/data/x.parquet")
+
+    def test_windows_style_drive_letter_is_not_mistaken_for_a_scheme(self):
+        """A bare `C:` looks like a scheme to a naive `"://" in s` test only if
+        the test is wrong. Guard it, cheaply."""
+        assert not mllib.is_remote_uri("C:/data/x.parquet")
+
+    def test_pathlib_mangles_a_bucket_uri_which_is_why_this_helper_exists(self):
+        """The bug stated as a test, so the reason survives the refactor.
+
+        `Path("gs://b/x")` collapses the `//` and stringifies back to
+        `gs:/b/x`. Spark reads that as a relative path under the working
+        directory and fails with a file-not-found that points nowhere near the
+        real problem."""
+        from pathlib import Path
+
+        uri = "gs://primary-data-dtc-506916/ml/samples/sample_work_train.parquet"
+        assert str(Path(uri)) != uri
+        assert mllib.is_remote_uri(uri)
+
+    # -- stem, for the leaderboard model name ------------------------------
+
+    def test_uri_stem_on_a_bucket_uri(self):
+        """`model_name()` builds the leaderboard label from the input stem. It
+        must read the same whether the file came from GCS or from disk, or the
+        cloud run and the local run land as two different models in one table."""
+        assert (
+            mllib.uri_stem("gs://b/ml/samples/sample_work_train.parquet")
+            == "sample_work_train"
+        )
+
+    def test_uri_stem_matches_pathlib_for_a_local_path(self):
+        from pathlib import Path
+
+        local = "/repo/spark/ml/data/sample_work_train.parquet"
+        assert mllib.uri_stem(local) == Path(local).stem
+
+    def test_uri_stem_strips_only_the_last_suffix(self):
+        assert mllib.uri_stem("gs://b/ml/data.tar.gz") == "data.tar"
+
+    def test_uri_stem_of_a_bare_filename(self):
+        assert mllib.uri_stem("sample_work_train.parquet") == "sample_work_train"
+
+    def test_uri_stem_ignores_a_trailing_slash(self):
+        """A directory-shaped input (a partitioned parquet dataset) is a normal
+        Spark input, and it must not stem to the empty string."""
+        assert mllib.uri_stem("gs://b/ml/samples/sample_work_train/") == "sample_work_train"
+
+    # -- joining an output location ----------------------------------------
+
+    def test_join_uri_preserves_the_scheme_separator(self):
+        assert (
+            mllib.join_uri("gs://b/ml/results", "leaderboard_x.csv")
+            == "gs://b/ml/results/leaderboard_x.csv"
+        )
+
+    def test_join_uri_does_not_double_the_separator(self):
+        assert (
+            mllib.join_uri("gs://b/ml/results/", "sweep_x.json")
+            == "gs://b/ml/results/sweep_x.json"
+        )
+
+    def test_join_uri_on_a_local_directory(self):
+        assert (
+            mllib.join_uri("/repo/spark/ml/results", "leaderboard_x.csv")
+            == "/repo/spark/ml/results/leaderboard_x.csv"
+        )
+
+    def test_join_uri_round_trips_through_is_remote_uri(self):
+        joined = mllib.join_uri("gs://b/ml/results", "sweep_x.json")
+        assert mllib.is_remote_uri(joined)
+
+    # -- Spark master ------------------------------------------------------
+
+    def test_spark_master_on_a_cluster_is_the_dataproc_master(self):
+        """The cluster case names the master explicitly. It used to return
+        None, meaning "take it from the environment" — and on Serverless
+        runtime 3.0 the environment says `local`. probe-master-20260913a
+        measured it: MASTER=local, spark.master=local, one thread, zero
+        executors. probe-master-20260913b passed `dataproc` and got two."""
+        assert mllib.spark_master(None) == mllib.DATAPROC_SERVERLESS_MASTER
+        assert mllib.DATAPROC_SERVERLESS_MASTER == "dataproc"
+
+    def test_spark_master_on_a_cluster_is_never_a_local_master(self):
+        """The property the 2026-09-07 prep batch lacked. It passed --cluster,
+        ran 57 minutes on one driver thread, and billed no executor."""
+        assert not mllib.is_local_master(mllib.spark_master(None))
+
+    def test_is_local_master_recognises_every_local_form(self):
+        """Driver memory rides with a local master only, so the scripts ask
+        this. `local` without brackets is the form Serverless injects."""
+        for master in ("local", "local[*]", "local[8]"):
+            assert mllib.is_local_master(master)
+
+    def test_is_local_master_is_false_for_a_cluster_master(self):
+        assert not mllib.is_local_master("dataproc")
+
+    def test_spark_master_pins_the_local_thread_count(self):
+        """`--cores 8` is not a performance knob. It fixes defaultParallelism,
+        which fixes the read partitioning, which fixes fold membership — the
+        thing that made the 2.4 parity run reproducible to full precision."""
+        assert mllib.spark_master(8) == "local[8]"
+
+    def test_spark_master_zero_means_every_core(self):
+        assert mllib.spark_master(0) == "local[*]"
+
+    def test_spark_master_rejects_a_negative_thread_count(self):
+        """Spark accepts `local[-1]` and then fails deep inside the scheduler."""
+        with pytest.raises(ValueError):
+            mllib.spark_master(-1)
+
+
+class TestWriteText:
+    """Both scripts write two small text artifacts, to a local path or a bucket.
+
+    The function lives here rather than in either script because M4 needs it in
+    both: `01_mllib_baseline.py` writes the leaderboard row and the run
+    metadata, `00_prep_spark.py` writes `prep_stats.json`. It takes the
+    SparkSession as an argument instead of importing pyspark, so this module
+    keeps the no-pyspark contract stated in its docstring and the local branch
+    stays testable on the host venv.
+
+    Only the local branch is unit-tested. The remote branch needs a live JVM,
+    and M4's cloud run is what exercises it.
+    """
+
+    def test_writes_a_local_file(self, tmp_path):
+        target = tmp_path / "leaderboard_x.csv"
+        mllib.write_text(None, str(target), "model,mae\nm,0.5\n")
+        assert target.read_text() == "model,mae\nm,0.5\n"
+
+    def test_creates_missing_parent_directories(self, tmp_path):
+        """The local results directory may not exist yet. The old script called
+        `RESULTS_DIR.mkdir(parents=True)` inline; that has to survive the move
+        or the first run on a clean clone fails at the write, after the fit."""
+        target = tmp_path / "results" / "nested" / "sweep_x.json"
+        mllib.write_text(None, str(target), "{}")
+        assert target.read_text() == "{}"
+
+    def test_overwrites_an_existing_file(self, tmp_path):
+        """Re-running a tag replaces its artifacts. Appending would produce a
+        leaderboard with two rows claiming one model."""
+        target = tmp_path / "leaderboard_x.csv"
+        target.write_text("stale")
+        mllib.write_text(None, str(target), "fresh")
+        assert target.read_text() == "fresh"
+
+    def test_no_spark_session_is_needed_for_a_local_write(self, tmp_path):
+        """Passing None proves the local branch never touches the JVM — the
+        prep script writes prep_stats.json after `spark.stop()` would be
+        equally valid, and a laptop run must not depend on py4j."""
+        target = tmp_path / "x.json"
+        mllib.write_text(None, str(target), "ok")
+        assert target.read_text() == "ok"

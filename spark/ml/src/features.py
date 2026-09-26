@@ -60,6 +60,12 @@ EXCLUDED_COLUMNS = [
     "has_tip",
     "tip_pct_of_fare",
     "payment_type",
+    # (c) carried by the prep on purpose, never model inputs. `build_features`
+    #     drops rather than allows, so a column the prep adds becomes a feature
+    #     unless it is named here. `tripid` is an identifier; `pickup_datetime`
+    #     is a raw timestamp that would also break the numeric preprocessor.
+    "tripid",
+    "pickup_datetime",
 ]
 
 # Object-dtype columns that are legitimately categorical model inputs

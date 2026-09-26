@@ -117,7 +117,7 @@ with DAG(
     schedule_interval='0 6 1 * *',   # 6 AM on the 1st of every month
     catchup=False,                   # don't process historical data
     max_active_runs=1,               # Limit parallel runs
-    tags=['dtc-de'],
+    tags=['nyc-taxi'],
 ) as dag:
     
     download_dataset_task = BashOperator(

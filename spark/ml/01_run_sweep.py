@@ -36,6 +36,9 @@ Outputs (per run, keyed by --tag):
                                               which only keys the two files above.
 
 Design notes:
+  - The temporal test set — every trip from 2016-11-01 on — is sealed first, on
+    the raw frame, and is never scored here either. The holdout below is drawn
+    from the earlier months only.
   - A stratified 20% holdout is sealed off before the sweep starts and is never
     scored here. The leaderboard below is CV-on-train only; the sealed rows are
     scored once in Phase 5, after the champion is chosen. `--no-holdout` exists
@@ -67,8 +70,10 @@ from spark.ml.src.evaluate import (  # noqa: E402
     HOLDOUT_FRACTION,
     RANDOM_STATE,
     STRATIFY_COLUMNS,
+    TEMPORAL_CUTOFF,
     make_cv,
     make_holdout,
+    make_temporal_test,
     train_split_filename,
     write_train_split,
 )
@@ -116,7 +121,8 @@ def main() -> None:
                     help="sealed test fraction held back from the sweep "
                          f"(default: {HOLDOUT_FRACTION})")
     ap.add_argument("--no-holdout", action="store_true",
-                    help="sweep the whole sample — smoke/wiring runs only, "
+                    help="sweep the whole sample, with neither the holdout nor "
+                         "the temporal set sealed — smoke/wiring runs only, "
                          "never a run whose leaderboard you intend to act on")
     ap.add_argument("--write-train", action="store_true",
                     help="persist the train half of the sealed split to "
@@ -137,6 +143,21 @@ def main() -> None:
     tag = args.tag or f"{args.sample}{'' if not args.no_duration else '_no_duration'}"
 
     df = load_sample(args.sample, args.limit_rows)
+
+    # Seal the temporal test set first (plan §4a): every trip from the cutoff
+    # on. It runs on the raw frame because build_features drops
+    # pickup_datetime, and before make_holdout so the random 80/20 draws only
+    # from the earlier months. Like the holdout, it is never scored here.
+    n_temporal = 0
+    if not args.no_holdout:
+        n_sample = len(df)
+        df, df_temporal = make_temporal_test(df)
+        n_temporal = len(df_temporal)
+        del df_temporal
+        print(f"[split] temporal={n_temporal} rows, pickup >= "
+              f"{TEMPORAL_CUTOFF:%Y-%m-%d} ({n_temporal / n_sample:.2%} of "
+              f"{n_sample}) — SEALED")
+
     X, y = build_features(df, include_duration=not args.no_duration)
     print(f"[data] {args.sample} sample -> X={X.shape}, duration="
           f"{'ON' if not args.no_duration else 'OFF'}")
@@ -203,6 +224,10 @@ def main() -> None:
         "holdout_rows": n_holdout,
         "holdout_frac": 0.0 if args.no_holdout else args.holdout_frac,
         "holdout_stratified_on": None if args.no_holdout else list(STRATIFY_COLUMNS),
+        # The temporal set is re-derivable from the cutoff + the sample file.
+        # The random holdout above is drawn from the rows before the cutoff.
+        "temporal_cutoff": None if args.no_holdout else TEMPORAL_CUTOFF.isoformat(),
+        "temporal_rows": n_temporal,
         # Which file, if any, the Spark baseline should read to train on these
         # exact rows — so an MLlib leaderboard row is traceable to a split.
         "train_split_path": (

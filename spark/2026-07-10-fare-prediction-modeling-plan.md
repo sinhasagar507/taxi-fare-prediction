@@ -29,8 +29,8 @@
 spark/ml/
 ├── 00_prep_spark.py            # Spark: fact_trips → cleaned → stratified sample parquet
 ├── data/
-│   ├── sample_full.parquet     # ~10% stratified (~12.8M rows) — final refit
-│   └── sample_work.parquet     # ~500K–1M rows — fast sweep iteration
+│   ├── sample_full.parquet     # 10% stratified (30,482,494 rows since 2026-09-13; stays in GCS) — final refit
+│   └── sample_work.parquet     # 1,828,181 rows since 2026-09-13 — fast sweep iteration
 ├── src/
 │   ├── features.py             # feature engineering (pure fns, unit-tested)
 │   ├── preprocess.py           # ColumnTransformer builders, scaled + tree variants
@@ -106,7 +106,9 @@ validates against all 612K training rows instead of 115K and exposes fold-to-fol
 **Adopted — stratified 80/20 holdout + 5-fold CV inside the 80%:**
 
 - `evaluate.make_holdout(X, y, test_size=0.2)` carves the split **before** the sweep sees
-  the data. On `sample_work`: 612,609 train / 153,152 sealed test.
+  the data. On the D-012 `sample_work` (2026-09-13): **1,355,641 train / 338,911 sealed
+  test**, drawn from the rows before the temporal cutoff below. The pre-D-012 sample gave
+  612,609 / 153,152; D-012 voided it.
 - Stratified on `service_type` × `temp_band_ord` — the same key `00_prep_spark.py`
   sampled with, so the smallest stratum (Green/Freezing, ~1.5%) can't skew.
 - Deterministic under `RANDOM_STATE=42`; the sealed rows are re-derivable from the
@@ -122,7 +124,26 @@ informed by a test score makes the final number optimistic: with 15 models separ
 the largest of 15 noise draws (~$0.005) — the same size as the real gap between the top
 two models. Tune, ablate and compare freely on CV; touch the holdout at the end.
 
-### Deferred — temporal test set (next time the prep runs)
+### Temporal test set — landed 2026-09-13 (was deferred)
+
+**Landed with the baseline, 2026-09-13** (owner decision 3). `evaluate.make_temporal_test`
+carves every trip with `pickup_datetime >= 2016-11-01` off the **raw** sample, before
+`build_features` drops the timestamp and before `make_holdout` draws the 80/20.
+`01_run_sweep.py` seals it by default, never scores or prints it, and records
+`temporal_cutoff` and `temporal_rows` in `results/sweep_<tag>.json` (`a00311c`).
+
+Measured on the D-012 `sample_work`, 1,828,181 rows:
+
+| Set | Rows | Share of the sample |
+| --- | ---: | ---: |
+| Temporal test set (2016-11: 65,459; 2016-12: 68,170) | 133,629 | 7.31% |
+| Random holdout — 20% of the 1,694,552 rows before the cutoff | 338,911 | 18.54% |
+| Train — the sweep's rows, `sample_work_train.parquet` | 1,355,641 | 74.15% |
+
+The share is 7.31%, not the ≈8% estimated below: 2 of 24 months is 8.33%, but the last
+two months hold fewer trips than the 24-month mean of 76,174 per month. The random
+holdout therefore draws from 2015-01 to 2016-10 only. The history below is kept as it
+was written.
 
 The 80/20 above is a **random** split, but the deployment case is predicting a fare for a
 trip happening *now* from a model trained on *past* trips. A random split lets 2016-06
@@ -138,8 +159,11 @@ date to split on.
 When the prep is next re-run:
 
 1. Add `pickup_datetime` (or just a `pickup_month` key) to the `keep` list.
+   **Done** — `4985c03`, in the 2026-09-13 samples.
 2. Carve a second test set: the **last 2 of 24 months (2016-11, 2016-12, ≈8%)**.
-3. Score the Phase-5 champion on **both** test sets and report the pair.
+   **Done 2026-09-13** — 133,629 rows, 7.31%, measured; see above.
+3. Score the Phase-5 champion on **both** test sets and report the pair. **Done 2026-09-26**
+   — holdout MAE 0.311353, temporal 0.316332, a +0.004979 gap; §6, "The HOLDOUT result".
    - **Agreement** → the random split was safe, and you can say so with evidence rather
      than assertion.
    - **Divergence** → real temporal drift, quantified.
@@ -353,6 +377,48 @@ faster**, and the one preprocessing capability MLlib lacks — a cross-fitted ta
 is worth more than the feature it encodes. §5c is where the scale argument gets made
 instead, and it is the only place the Spark side can win.
 
+### Measured on the D-012 split — 2026-09-15, with the mechanism test
+
+D-012 voided the table above: its 612,608 rows came from the pre-fix build. The rows below
+are on the 1,355,641-row D-012 train split, and they do not compare with the rows above.
+The three MLlib rows: 5 folds, seed 42, GBT `maxIter=100` `maxDepth=5`, smoothing 5,
+Spark 4.0.1 in the dev container, `local[8]`, `default_parallelism` 8, so the fold
+membership is the same. Row 1 comes from the `work_d012` sweep of 2026-09-15, the same
+1,355,641 rows and `KFold(5, seed=42)`. No holdout or temporal metric was computed.
+
+| Row | Model | `od_corridor` | MAE | RMSE | R² | Mean fit |
+|---|---|---|---|---|---|---|
+| 1 | `lightgbm` (sklearn) | target-encoded, **cross-fitted** | **0.331289** ±0.001310 | **0.936259** ±0.029962 | **0.990686** ±0.000610 | **5.1 s** |
+| 3 | `mllib_gbt_nocorr@work1355k` | dropped | 0.453134 ±0.003220 | 1.138785 ±0.006900 | 0.986234 ±0.000206 | 389.0 s |
+| OOF | `mllib_gbt_oof@work1355k` | cross-fitted out-of-fold, outside MLlib | 0.462342 ±0.000505 | 1.161502 ±0.011404 | 0.985679 ±0.000304 | 473.8 s |
+| 2 | `mllib_gbt@work1355k` | `TargetEncoder`, not cross-fitted | 0.466188 ±0.005356 | 1.201377 ±0.021579 | 0.984675 ±0.000561 | 532.8 s |
+
+**This is the test the 2026-09-01 reading asked for:** a cross-fitted encoding computed
+outside MLlib and fed in as a plain column (migration plan §5.3, `src/oof_encode.py`). A
+training row's encoding now comes from the other inner folds only, and the test fold is
+encoded from the whole train half.
+
+**What it shows**, with "material" meaning more than the compared run's fold std:
+
+- **The corridor is still net-negative in MLlib.** Dropping it beats the cross-fitted
+  encoding on all three metrics, by 2.7x to 3.3x row 3's fold std, and on MAE in all 5 folds.
+  So the uncross-fitted encoder is not the whole story.
+- **On MAE the OOF row equals row 2.** It is 0.003846 below, inside row 2's std of
+  0.005356. Read on MAE, cross-fitting did not help.
+- **On RMSE and R² the OOF row is materially better than row 2** (1.85x and 1.79x row 2's
+  std). Read on those, the encoder was part of the story and MLlib's GBT is the rest.
+- The OOF row's MAE spread is a tenth of row 2's (0.000505 against 0.005356).
+
+- **Row 1 against the Spark rows holds the 2026-09-01 shape, at a smaller accuracy gap.**
+  lightgbm's MAE is 0.134898 below row 2 (25.2x row 2's fold std) and 0.121845 below row 3
+  (37.8x row 3's). On identical rows the sklearn stack is **1.41x more accurate and 105x
+  faster** than row 2, against 1.5x and 167x on the voided 612,608 rows. Against row 3 it
+  is 1.37x and 77x.
+
+The migration plan §5.4 carries the differences and the leakage check on real data. The
+owner read §5.4 on MAE on 2026-09-15, so the outcome row is "at or above row 2" and D2
+stands — recorded as **D-013** in `notes/decisions.md`.
+
 ---
 
 ## 5c. Full-scale training — deferred to Cloud (decided 2026-08-04)
@@ -402,6 +468,29 @@ categorical dtype before relying on it.
 10.2M rows. It cannot be extrapolated from a 500K slice — measure it with a single-model
 probe (`--sample full --only lightgbm`) before committing to a machine size.
 
+### Re-scoped to D-012 — 2026-09-15
+
+The figures above are pre-D-012 and the scope below replaces the model list. Measured
+2026-09-15:
+
+- **`sample_full` holds 30,482,494 rows**, 2.4x the 12,748,027 above, and it exists in
+  `gs://primary-data-dtc-506916/ml/prep/` only — not on the laptop. Every size and time
+  figure above is therefore a **floor**, not an estimate, and the machine-size question is
+  **UNVERIFIED** until the lightgbm probe runs.
+- **The model list survives, with a new order.** The `work_d012` sweep (14 models,
+  1,355,641 rows, 5 folds, 7,468.0 s in the dev container) gives the same top four by RMSE:
+  `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680, `extra_trees` 0.947680.
+  The first two swapped places, and their gap of 0.007494 is inside the fold std of
+  0.030278, so the order between them is noise. On MAE `catboost` beats `lightgbm` by 8.1x
+  its fold std.
+- **The champion is metric-dependent on this split.** By RMSE it is `catboost`; by MAE it
+  is `stacking` (0.319527), with `extra_trees` 0.319730 and `catboost` 0.320963 inside one
+  fold std of it. `leaderboard()` sorts by RMSE.
+- **`stacking` costs 675.7 s per fold here**, 133x `lightgbm`'s 5.1 s, so it dominates any
+  full-scale budget.
+- **The MLlib arm is row 3's configuration** — the corridor dropped (`--drop-corridor`) —
+  per **D-013**, because the corridor stays net-negative in MLlib even cross-fitted.
+
 ---
 
 ## 6. Phase 5 — Tune + diagnose
@@ -411,6 +500,593 @@ probe (`--sample full --only lightgbm`) before committing to a machine size.
 - Residual plots, learning curves, feature importance + **SHAP** on champion
 - Slice metrics by borough / temp_band / hour → final leaderboard
 - Run the **duration on/off ablation** and report the gap
+
+### The finish plan — the owner's decisions and the TUNE goal (2026-09-16)
+
+The owner took these decisions on 2026-09-16, after M4, §5.4 and D-013, and before any
+Phase 5 work. They set the fastest path to the end of the project. The TUNE goal below runs
+stage 1 of that path. It is stored as the owner accepted it; paste it as written. It is
+3,945 characters.
+
+Measured while the goal was written, 2026-09-16, read-only:
+
+- **`sample_full` contains the sealed rows.** `00_prep_spark.py:334` draws `sample_work`
+  from `sample_full` (`stratified_sample(full, ...)`). So the holdout (338,911 rows) and the
+  2016-11 and 2016-12 months of the temporal test set sit inside `sample_full`. The bullet
+  above, "Refit champion on `sample_full`", would train on the rows the holdout later
+  scores. §5b recorded the same overlap for MLlib only. No exclusion step exists.
+- **No tuning code exists.** The dev container has `optuna` 4.9.0 and `shap` 0.52.0; the
+  host `.venv` has neither, nor `lightgbm` or `catboost`.
+- **CatBoost leads on MAE.** `work_d012`: `catboost` 0.320963 ± 0.001271, fit 30.5 s;
+  `lightgbm` 0.331289 ± 0.001310, fit 5.1 s.
+- **The gate is the full suite again.** Host `.venv/bin/pytest tests/`: 385 passed,
+  1 skipped. Container `pytest tests/`: 386 passed. The `--ignore` of
+  `test_oof_encode.py` hid 21 tests.
+
+| # | Question | Decision | Why | Consequence |
+| --- | --- | --- | --- | --- |
+| 1 | The end of the project | **Four results:** a tuned champion scored once on the holdout and the temporal set; M5; a true README, `CASE_STUDY.md` and dashboard; nothing running or billing | A finish line that can be checked | Four stages: tune, scale, score once, close |
+| 2 | Which rows train the holdout champion | **The `sample_work` train split**, 1,355,641 rows | The rows are clean today; no exclusion code, no VM | The "Refit champion on `sample_full`" bullet above is superseded |
+| 3 | Phase 6, neural nets | **After the end** | It is the largest single block of work | D-014, DEFERRED |
+| 4 | §5c at full scale | **The champion + MLlib row 3** | `stacking` was a 4 h floor at 12.75M rows | Both train on `sample_full`, so their numbers are **CV only** and never sit beside the holdout score |
+| 5 | The dashboard | **Reconnect `ds0` + pages 1–2** | Pages 3–6 and the polish were 5 of 10 planned days | The Day 1 baseline numbers predate D-012 and are refreshed |
+| 6 | The champion rule | **Lower tuned CV MAE; a gap inside the larger fold std goes to the faster fit** | MAE is the owner's metric (D-013); speed decides the §5c cost | A close result picks `lightgbm` |
+| 7 | The tuning budget | **45 min per model**, Optuna `TPESampler(seed=42)`, trial 0 the defaults | Trial 0 proves the harness equals the sweep | About 2 h, ESTIMATED |
+| 8 | Speed | **One goal per stage** | The per-step review moves to the goal boundary | The owner's UI work runs beside the compute |
+
+Options not taken: refitting on `sample_full` with the sealed rows removed; Phase 6 inside
+the project; the top four at full scale, or MLlib only; the full v3 dashboard.
+
+<details><summary>The TUNE goal command</summary>
+
+```text
+/goal Tune and diagnose the Phase 5 champion on the D-012 work train split, with the holdout still sealed. MET only when the transcript shows a final report headed "TUNE DONE" with all of:
+(a) notes: the 2026-09-16 decisions table and this goal in the modeling plan; D-014 DEFERRED (Phase 6) in notes/decisions.md;
+(b) TDD src/tune.py: failing test shown in the container, then code; its tests importorskip optuna;
+(c) trial 0 = defaults, per model: CV MAE against work_d012, the difference shown;
+(d) catboost and lightgbm tuned: trials, best params, mae, rmse, r2 mean and std, elapsed;
+(e) the champion by the FACTS rule, both MAEs and stds shown;
+(f) champion diagnostics on out-of-fold predictions: MAE by pickup_borough, temp_band_ord and hour; mean |SHAP| per feature; duration on/off MAE gap;
+(g) docs, measured numbers only (D-009): modeling plan §6 and Status; next = §5c at scale;
+(h) commits: this goal's note + D-014, the tune code, then docs; gate before: host 385 passed 1 skipped, container 386 passed; after: 0 failed, only new tests added; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "TUNE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §4a, §6, §8; notes/decisions.md (D-005, D-009, D-013).
+- Owner decisions 2026-09-16: the holdout champion trains on the work split; Phase 6 after the end; §5c at scale = champion + MLlib row 3, CV only; dashboard = reconnect + pages 1-2.
+- Champion rule, owner 2026-09-16: lower tuned CV MAE; a gap inside the larger fold std goes to the faster fit.
+- sample_full contains sample_work (00_prep_spark.py:334), so it holds the sealed rows. Nothing here reads it.
+- sample_work.parquet: 2 files, 110,474,656 B, 1,828,181 rows. 01_run_sweep.py carves temporal 133,629, holdout 338,911, train 1,355,641.
+- work_d012, 5 folds, seed 42: catboost mae 0.320963 ± 0.001271, fit 30.5 s; lightgbm mae 0.331289 ± 0.001310, fit 5.1 s.
+- No tuning code exists. Container: optuna 4.9.0, shap 0.52.0, catboost 1.2.10, lightgbm 4.7.0, sklearn 1.7.1; 11 CPUs, 11.67 GiB; Airflow 6 services up. The host lacks optuna, shap, lightgbm, catboost.
+- Tuning: Optuna TPESampler(seed=42); objective = evaluate() on make_cv(5); metric MAE; timeout 45 min per model. About 2 h, ESTIMATED.
+- Hour comes from pickup_hour_sin/cos; the frame has no hour column.
+- Gate: .venv/bin/pytest tests/ -> 385 passed, 1 skipped. Container: pytest tests/ -> 386 passed.
+
+STEPS
+1. Gate both. Commit this goal's note and D-014.
+2. TDD src/tune.py: search spaces; the objective reuses sweep.build_pipeline and evaluate; trial 0 enqueues the defaults.
+3. Write spark/ml/02_tune.py: carve exactly as 01_run_sweep.py, tune both, write leaderboard_tune_d012.csv and tune_d012.json (best params, trials, elapsed). Commit 2-3.
+4. Pick the champion by the rule.
+5. Diagnose it: out-of-fold predictions on make_cv(5); slice MAE; SHAP on 20,000 train rows, seed 42; duration off via build_features(include_duration=False).
+6. Docs (g). Commit.
+7. Final gate both. Print "TUNE DONE" with (a)-(h) and the next step: §5c at scale.
+
+PRINT "TUNE STOPPED: <reason>" AND END WHEN
+- a row count differs from FACTS;
+- trial 0's MAE differs from work_d012 by more than that model's fold std;
+- a new test passes before its code exists, or a gate shows a new failure;
+- a model's tuning passes 2x its timeout, or the run passes 4 h;
+- anything computes a holdout or temporal metric;
+- an action conflicts with a LOCKED entry in notes/decisions.md;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud calls: no GCS, BigQuery or Dataproc. Delete nothing.
+- Run ML in the dev container. Never read sample_full.
+- Never score, print or select on the holdout or the temporal set.
+- Out of scope: §5c, holdout scoring, Phase 6, CASE_STUDY.md (D-005), the dashboard, dbt edits, terraform.
+```
+
+</details>
+
+#### The TUNE results (2026-09-16 to 2026-09-17)
+
+Ran to completion. LightGBM tuned locally in the dev container; CatBoost's tuning needed
+three attempts on this laptop before it ran on a short-lived GCE VM. Full measured record:
+
+- **Trial 0 reproduces the sweep exactly, across every attempt.** Both models' trial 0
+  equals `work_d012` to full float precision — LightGBM 0.3312894770867774 (difference 0,
+  inside its 0.001310 std) and CatBoost 0.3209632524909859 (difference 0, inside its
+  0.001271 std) — on the two aborted local attempts and the completed VM run alike.
+- **LightGBM, 28 trials, 5,278.4 s in the dev container.** Best is trial 21: MAE
+  **0.312976 ± 0.001181**, RMSE 0.924104 ± 0.029779, R² 0.990926 ± 0.000596, fit 19.1 s;
+  `n_estimators` 617, `learning_rate` 0.031875, `num_leaves` 174, `min_child_samples` 13,
+  `colsample_bytree` 0.921348, `reg_lambda` 4.121935.
+- **CatBoost, 7 trials, 2,886.6 s on the cloud VM.** Best is trial 5: MAE
+  **0.319282 ± 0.001334**, RMSE 0.928017 ± 0.031592, R² 0.990848 ± 0.000634, fit 89.7 s;
+  `depth` 8, `random_strength` 2.123391, `subsample` 0.590912. Its local attempts reached
+  only 1 and then 6 trials before freezing — see "The laptop failed three times" below.
+- **Champion, by the owner's rule: LightGBM.** The gap over CatBoost's tuned MAE is
+  0.006306, which exceeds CatBoost's own fold std of 0.001334 — LightGBM wins outright, not
+  on the speed tie-break. It is also 4.7x faster to fit: 19.1 s against 89.7 s.
+- **Champion diagnostics**, on out-of-fold predictions from the tuning folds:
+  - Overall: MAE 0.312976, RMSE 0.924583, R² 0.990927 — equal to the tuned CV mean, as
+    expected on the same folds.
+  - By `pickup_borough`: Manhattan (1,153,561 rows) is best-served at 0.281533; EWR
+    (11 rows) at 19.648423 and Staten Island (40 rows) at 1.307828 are worst, both too thin
+    to read as anything but noise.
+  - By `temp_band_ord` (0=Freezing…4=Hot): a mild upward slope, 0.300806 to 0.321046,
+    flattening at band 4 (0.315272).
+  - By hour: a trough at 6h (0.290058), peaks at 4h (0.365363) and 16h (0.355205) —
+    consistent with thin overnight and evening-peak volume, not an obvious signal.
+  - Mean |SHAP| ranks `distance_capped` (4.018100) and `trip_duration_min` (2.887503) far
+    above everything else; `is_airport_trip` (0.429733) and `od_corridor` (0.222188) are a
+    distant third and fourth. Every borough one-hot column sits below 0.01.
+  - **Duration on/off ablation**, tuned params, same rows and folds: on 0.312976 ± 0.001181
+    against off 1.225862 ± 0.001602 — a **+0.912886** MAE gap. Duration carries most of the
+    model's accuracy, matching the SHAP ranking. The params were tuned with duration on, so
+    this is the cost of removing the feature from the tuned model, not a re-optimized
+    off-model's ceiling.
+
+**The laptop failed three times**, all on the CatBoost re-run, never on LightGBM or the
+diagnostics:
+1. The lid closed on battery power mid-study; the container froze with no CPU ticks
+   advancing, caught via `/proc/1/stat`.
+2. A second attempt, on AC power, was killed by the harness's own low-memory guard — host
+   swap was 91% full. The idle Airflow stack (up 20 h, 3.7 GiB, its scheduler unhealthy)
+   was stopped to free it; restart with `docker compose -f airflow/docker-compose.yaml
+   start` when the stack is needed again.
+3. A third attempt froze again despite `caffeinate`, coinciding with a silent switch back
+   to battery power.
+
+The fourth attempt moved to a short-lived `e2-standard-4` GCE VM (`tune-catboost-vm`,
+us-central1-a, reached over an IAP SSH tunnel; no external GCP calls, since the job only
+reads local files), which ran cleanly with no freeze. **Cost: 1.6551 hours × $0.161/hour ≈
+$0.266.** The VM was deleted immediately after; `gcloud compute instances list` returns
+empty.
+
+#### §5c at scale — the goal (2026-09-17)
+
+The owner authorized this step and its cloud spend on 2026-09-17, after the TUNE goal
+closed. It is stored as accepted; paste it as written.
+
+Measured while the goal was written, read-only:
+
+- **`sample_full` cannot be trained on directly.** It still carries the sealed holdout and
+  temporal rows; no `sample_full_train.parquet` exists yet. Both the sklearn refit and the
+  MLlib batch need that split carved first, the same problem the TUNE goal solved for
+  `sample_work`.
+- **`01_run_sweep.py` has no path to the tuned hyperparameters.** It only builds the
+  registry's untuned defaults, so "refit champion" needs a small new script composing
+  already-tested `evaluate.py` and `tune.py` functions, not a sweep run.
+- `sample_full`: 30,482,494 rows, 8 objects, 1,836,372,066 bytes, `gs://primary-data-dtc-506916/ml/prep/sample_full.parquet`.
+- The default Compute Engine service account holds project Editor, which the bucket's IAM
+  maps to `legacyBucketOwner` — the VM needs no keyfile to read or write the bucket.
+- `e2-standard-8` price is **EXTRAPOLATED** at $0.322/hour (2x the VERIFIED
+  `e2-standard-4` rate), not read from the Billing Catalog — that client library is not
+  installed, and installing it mid-goal was avoided rather than done silently.
+- This is two different designs, not one distributed system: the sklearn refit is a single
+  VM (LightGBM multi-threads within it, no cluster); only the MLlib batch is genuinely
+  distributed, on Dataproc Serverless with `maxExecutors=4`.
+
+<details><summary>The SCALE goal command</summary>
+
+```text
+/goal Run §5c at scale: refit the tuned LightGBM champion and the MLlib row-3 config on sample_full, CV only, holdout still sealed. MET only when the transcript shows a final report headed "SCALE DONE" with all of:
+(a) sample_full_train.parquet carved (temporal + holdout sealed and dropped) and uploaded; rows, bytes, crc32c shown;
+(b) TDD: a failing test for the carve-count helper, then code;
+(c) LightGBM refit-CV on the VM: 5-fold mae/rmse/r2 mean+std, elapsed, params used;
+(d) MLlib row-3 batch SUCCEEDED: master dataproc, executors, rows, mae/rmse/r2 mean+std, DCU-seconds, dollars;
+(e) both compared to the TUNE work-split numbers only as context, never as a gate — no holdout or temporal metric anywhere;
+(f) VM deleted, batches list empty, instances list empty; total spend;
+(g) docs, measured only (D-009): modeling plan §6 "The §5c results" + Status; migration plan §5c line; next = Phase 5's one holdout score;
+(h) commits: this note, the carve helper, then results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "SCALE STOPPED:". Stop after 40 turns.
+
+FACTS
+- Owner suspends per-step review for this goal; owner authorized cloud spend generally.
+- sample_full: gs://primary-data-dtc-506916/ml/prep/sample_full.parquet, 30,482,494 rows, 1,836,372,066 bytes, 8 parts.
+- No sample_full_train.parquet exists. Carve with evaluate.make_temporal_test + make_holdout, same as 01_run_sweep.py/02_tune.py.
+- Champion params (tune_d012b.json): lightgbm, n_estimators 617, learning_rate 0.031875, num_leaves 174, min_child_samples 13, colsample_bytree 0.921348, reg_lambda 4.121935.
+- VM: e2-standard-8, us-central1-a, IAP SSH, default SA (Editor -> bucket read/write, no keyfile). Price $0.322/hr, EXTRAPOLATED from the verified e2-standard-4 rate.
+- MLlib: 01_mllib_baseline.py --cluster --drop-corridor, --input the new train split, maxExecutors=4, dependencies rebuilt at current HEAD sha.
+- Gate: pytest tests/ -> 385 passed 1 skipped (host); container 401 passed.
+
+STEPS
+1. Gate. Commit this goal's note.
+2. TDD the carve-count verification helper. Commit.
+3. VM up; fetch sample_full; carve; verify; upload sample_full_train.parquet.
+4. Refit-CV LightGBM on the VM with the champion params; write results to GCS.
+5. Delete the VM.
+6. Upload code at HEAD to dependencies/m4scale-<sha>/; submit the MLlib batch.
+7. Read batch meta + usage.
+8. batches list; instances list.
+9. Docs (g). Commit.
+10. Final gate. Print "SCALE DONE" with (a)-(h); next = the one holdout score.
+
+PRINT "SCALE STOPPED: <reason>" AND END WHEN
+- a row/byte/crc32c count is inconsistent with itself between steps;
+- the batch fails, master isn't dataproc, or no executor ran a task;
+- the VM run exceeds 90 minutes;
+- combined spend passes $6;
+- a new test failure, or a new test passes before its code exists;
+- anything computes a holdout or temporal metric;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only to ml/samples/sample_full_train.parquet, dependencies/m4scale-<sha>/, ml/results/.
+- Delete nothing in GCS. One VM, one batch; never re-run either.
+- Never score, print or select on the holdout or the temporal set.
+- Out of scope: the holdout score itself, Phase 6, CASE_STUDY.md, the dashboard, dbt, terraform.
+```
+
+</details>
+
+#### SCALE stopped at the VM's 90-minute limit — memory wall found (2026-09-17/18)
+
+**SCALE STOPPED: the VM run passed 90 minutes** (137.5 min total, mostly spent recovering
+from a broken GCS transfer tool, not the actual job) **and the job itself then hit a
+memory wall the goal did not anticipate.** No Dataproc batch was submitted. The VM was
+deleted immediately; `gcloud compute instances list` and the batches `RUNNING`/`PENDING`
+filter both return empty. **Cost: 137.5 min × $0.322/hour (EXTRAPOLATED) ≈ $0.738**, under
+the $6 cap.
+
+What happened, in order:
+
+1. **`gcloud storage cp`'s parallel transfer manager hangs on this VM**, under any identity
+   — every worker process alive with zero bytes moving, for as long as it was left running.
+   Not an auth issue: it hung identically before and after the correct service account was
+   activated.
+2. **`gsutil -m` "completed" with corrupted output.** The temp files reached the exact
+   source byte counts, but their CRC32C did not match the source objects — real content
+   corruption, not a naming artifact. Discovered by checksumming before trusting the data,
+   per D-009.
+3. **A serial `gsutil` transfer, once the identity was fixed, worked correctly** — all 8
+   parts verified byte-for-byte and CRC32C-for-CRC32C against the source. Two `pkill`
+   commands aimed at the stuck transfer killed the SSH session itself instead, costing two
+   more reconnect cycles.
+4. **The default Compute Engine service account cannot read the bucket at all**, despite
+   holding project Editor. Both it and the operator's own `gcloud` OAuth identity got
+   `403 storage.objects.get denied` on every attempt. Only `dtc-de-course@...` — the
+   service account behind `secrets/gcp-credentials.json` — could read the objects. The
+   open decision 1's "no keyfile needed" assumption was wrong; this VM needed the keyfile
+   copied up, used, and is now gone with the VM.
+5. **`e2-standard-8` (32 GiB) cannot hold `sample_full` in pandas.** The container was
+   OOM-killed (exit 137) immediately after `pd.read_parquet` reported 30,482,494 rows —
+   before `build_features` ran, before any fit. The §5c table's 4.8 GB estimate at 10.2M
+   rows was for the **post-`build_features` feature frame**, not the raw loaded frame with
+   every original column; that raw-frame cost was never measured and is not the same
+   number. `03_scale_champion.py` itself never printed `[split]`, so the carve, the CV fit,
+   and `sample_full_train.parquet` do not exist yet.
+
+**What survived:** the code (`03_scale_champion.py`, `b0e07f1`) and the carve-count guard
+(`a60ffdb`) are committed and dry-run-verified against `sample_work.parquet`, reproducing
+the TUNE champion's exact numbers. Nothing about them is wrong — the machine under them
+was too small.
+
+**Next, before another VM:** measure the raw-frame memory cost directly — read
+`sample_full.parquet` on a large machine once, log peak RSS, and size the real VM from
+that number instead of extrapolating a different number. A `--memory` limit on the
+container would have converted this silent 137 into a clear log line, and a smaller
+project of the columns `build_features` will actually keep, done at the pyarrow layer
+before the pandas conversion, may cut the peak enough to avoid the resize entirely — the
+§5c table already named this same idea as "the category-dtype enabler," for the same
+reason. Fetching the data proved the identity problem is solved and repeatable: activate
+`dtc-de-course@...` from a copied keyfile, then run `gsutil` (never `gcloud storage cp`)
+serially.
+
+#### RESCALE — the owner's decisions and the goal (2026-09-25)
+
+The owner set this goal on 2026-09-25 to re-run §5c after the SCALE memory wall. It is
+stored as accepted; paste it as written. The decisions it carries:
+
+- **Load lean, then measure.** A new `load_prep_sample` reads only the columns
+  `build_features` keeps, at the pyarrow layer, and casts the three decimal128 climate
+  columns to float64 before the pandas conversion. It is test-first, and its
+  `build_features` output must equal the `pd.read_parquet` path's.
+- **Hold less at once.** `03_scale_champion.py` frees `df` after `build_features` and
+  writes the train split without the `X.copy()`.
+- **Size the VM from a measured peak.** A `--smoke` on `sample_work` in the container,
+  under `/usr/bin/time -v`, gives the peak RSS. The sample_full/sample_work row ratio,
+  30,482,494 / 1,828,181 = 16.674, scales it. Above 50 GiB the goal stops.
+- **A bigger VM, an attached identity.** `e2-highmem-8` (64 GiB), with
+  `dtc-de-course@...` attached as the VM's service account — no keyfile is copied up.
+  The container runs with `--memory=58g`, so a wall shows as a clear 137 exit, not a
+  silent one.
+- **The same transfer rule.** Serial `gsutil` only, and a CRC32C check on every part.
+
+Measured while the goal was written, 2026-09-25:
+
+- Gate: host `.venv/bin/pytest tests/` 390 passed, 2 skipped; the dev container 406
+  passed.
+- Host, `sample_work`, read + `build_features` peak: `pd.read_parquet` 3.03 GB
+  (x16.674 = 47.1 GiB); arrow projection + float cast 2.60 GB (40.4 GiB). Both
+  **EXTRAPOLATED**, and neither includes the fit.
+- The `e2-highmem-8` price is **UNVERIFIED** until it is read before the VM is created.
+
+<details><summary>The RESCALE goal command</summary>
+
+```text
+/goal Re-run §5c after the SCALE memory wall: lean load, measured peak, right-sized VM; refit the tuned LightGBM champion and MLlib row 3 on sample_full, CV only, holdout sealed. MET only when the transcript shows a final report headed "RESCALE DONE" with all of:
+(a) note: the RESCALE decisions + this goal in the modeling plan §6;
+(b) TDD load_prep_sample (arrow projection, decimal->float64): failing test in the container, then code; build_features equal to the pd.read_parquet path;
+(c) 03_scale_champion.py uses it, frees df after build_features, writes the train split with no copy; --smoke on sample_work: peak RSS, elapsed, peak x16.674;
+(d) sample_full_train.parquet carved, uploaded; rows, bytes, crc32c;
+(e) LightGBM refit-CV on the VM: mae/rmse/r2 mean+std, elapsed, peak RSS;
+(f) MLlib row-3 batch SUCCEEDED: master, executors, rows, mae/rmse/r2 mean+std, DCU-s, dollars;
+(g) TUNE numbers as context only; no holdout or temporal metric;
+(h) VM deleted; instances list and RUNNING/PENDING batches empty; total spend;
+(i) docs, measured only (D-009): §6 + Status; migration plan §5c;
+(j) commits: note, loader+script, results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "RESCALE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §6 "SCALE stopped"; D-009.
+- sample_full: gs://primary-data-dtc-506916/ml/prep/sample_full.parquet, 8 parts, 1,836,372,066 B, 30,482,494 rows. No sample_full_train.parquet in GCS.
+- 22 columns; build_features drops tripid, fare_amount, trip_distance, temperature, ratecodeid; humidity/windSpeed/visibility are decimal128.
+- Host, sample_work (1,828,181 rows), read+build_features peak: pd.read_parquet 3.03 GB (x16.674 = 47.1 GiB); arrow projection + float cast 2.60 GB (40.4 GiB). EXTRAPOLATED; fit excluded.
+- 03_scale_champion.py holds df, X and X.copy() at once.
+- Params: CHAMPION_PARAMS in 03_scale_champion.py.
+- VM: e2-highmem-8 (64 GiB), us-central1-a, IAP SSH, --service-account dtc-de-course@dtc-de-project-506916.iam.gserviceaccount.com, scope cloud-platform, no keyfile. Price UNVERIFIED; read it before creating.
+- Fetch with serial gsutil only (gcloud storage cp hung; gsutil -m corrupted data).
+- Container runs with --memory=58g.
+- MLlib: 01_mllib_baseline.py --cluster --drop-corridor, --input the new train split, maxExecutors=4, code at HEAD in dependencies/m4scale-<sha>/.
+- Gate: host .venv/bin/pytest tests/ -> 390 passed, 2 skipped. Container UNVERIFIED (Docker down).
+- Instances and RUNNING/PENDING batches: empty 2026-09-25.
+
+STEPS
+1. Gate both. Commit the note.
+2. TDD load_prep_sample. Wire it into 03_scale_champion.py. --smoke on sample_work in the container under /usr/bin/time -v. Commit.
+3. Read the VM price. VM up; fetch; crc32c each part.
+4. Carve, verify, upload sample_full_train.parquet; refit-CV; results to ml/results/.
+5. Delete the VM.
+6. Upload code; submit the MLlib batch; read meta + usage.
+7. Instances list; batches list.
+8. Docs (i). Commit.
+9. Final gate. Print "RESCALE DONE" with (a)-(j); next = the one holdout score.
+
+PRINT "RESCALE STOPPED: <reason>" AND END WHEN
+- the smoke peak x16.674 exceeds 50 GiB;
+- a row/byte/crc32c count differs from FACTS or between steps;
+- the container exits 137, or the VM passes 120 minutes;
+- the batch fails, master is not dataproc, or no executor ran;
+- spend passes $6;
+- a new test fails, or passes before its code exists;
+- anything computes a holdout or temporal metric;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only: ml/samples/sample_full_train.parquet, dependencies/m4scale-<sha>/, ml/results/.
+- Delete nothing in GCS. One VM, one batch, no re-runs.
+- Never score or print the holdout or temporal set.
+- No re-tuning; the params stay as in FACTS.
+- Out of scope: the holdout score, Phase 6, CASE_STUDY.md, the dashboard, dbt, terraform.
+```
+
+</details>
+
+#### The RESCALE results — §5c at scale (2026-09-25/26)
+
+Every number below is measured. No holdout or temporal metric was computed anywhere; the
+sealed rows were carved, counted and deleted in the same statement. The TUNE numbers
+appear only as context, never as a gate.
+
+**The lean load (`8613595`), test first.** `spark/ml/src/load.py`'s `load_prep_sample`
+projects away the five columns `build_features` drops and nothing reads (`tripid`,
+`fare_amount`, `trip_distance`, `temperature`, `ratecodeid`) and casts the three
+decimal128 climate columns to float64 in Arrow. `evaluate.write_train_split` now writes in
+1,000,000-row chunks through one `ParquetWriter` instead of a `pd.concat` copy of X, and
+`03_scale_champion.py` frees the raw frame after `build_features`.
+
+- RED in the dev container first: `tests/unit/ml/test_load.py` failed on the missing
+  module, and the two chunked-write tests failed on the missing `chunk_rows` argument.
+- **The first GREEN attempt found a real defect.** pyarrow 21's direct `decimal128(38, 9)
+  -> float64` cast is one ULP off on values such as 0.123456789
+  (0.12345678900000001), while the `pd.read_parquet` path rounds correctly. The cast
+  now goes through the exact decimal string, which Arrow parses with correct rounding.
+- On the real `sample_work` (1,828,181 rows), `build_features` on the lean frame equals
+  the `pd.read_parquet` path exactly: X 1,694,552 x 15 after the temporal carve.
+
+**The smoke, dev container, `sample_work`, under `/usr/bin/time -v`:** peak RSS 2,256,072
+KiB (2.152 GiB), fit included; 1:58.42 wall; CV 109.8 s. MAE 0.312976 ± 0.001181 — equal
+to the TUNE champion. Peak x 16.674 = **35.88 GiB, EXTRAPOLATED**, under the 50 GiB stop
+line. One earlier attempt of the same command exited 0 in 1.22 s with no output and no
+files; it was not reproduced and is unexplained.
+
+**The VM run.** `rescale-vm`, `e2-highmem-8` (8 vCPU, 62 GiB visible), us-central1-a,
+Debian 12, `dtc-de-course@...` attached as the VM's service account — **no keyfile was
+copied**, and the attached identity could read and write the bucket. The dev image was
+built on the VM from `docker/dev/Dockerfile` (amd64): Python 3.12.14, numpy 2.5.3 (the
+local image has 2.4.6), pandas 2.3.1, pyarrow 21.0.0, scikit-learn 1.7.1, lightgbm 4.7.0.
+
+- **Fetch:** serial `gsutil`, about one minute. All 8 parts equal the source objects in
+  size and CRC32C; 1,836,372,066 bytes in total; 30,482,494 rows in the parquet metadata.
+- **Carve:** temporal 2,228,057 / holdout 5,650,888 / train 22,603,549 — they sum to
+  30,482,494. Shares 0.073093 / 0.200000 / 0.741526, inside tolerance of the work split's.
+- **`gs://primary-data-dtc-506916/ml/samples/sample_full_train.parquet`:** 22,603,549
+  rows, 23 row groups, 16 columns (the work split's columns, in the same order);
+  272,456,910 bytes; CRC32C `gvslwA==`, equal on the VM and in GCS. The object did not
+  exist before.
+- **LightGBM refit-CV, tuned champion params, 5 folds, seed 42, `--memory=58g`:**
+
+  | run | rows | MAE | RMSE | R² | fit per fold | CV elapsed |
+  |---|---:|---|---|---|---:|---:|
+  | `lightgbm@scale_full` | 22,603,549 | **0.304570 ± 0.000319** | 0.875488 ± 0.007857 | 0.991863 ± 0.000149 | 307.1 s | 1,762.1 s |
+  | TUNE, context only | 1,355,641 | 0.312976 ± 0.001181 | 0.924104 ± 0.029779 | 0.990926 ± 0.000596 | 19.1 s | — |
+
+  Wall time 31:46.58; **peak RSS 28,239,372 KiB (26.93 GiB)**, against the 35.88 GiB
+  extrapolation; exit 0, `OOMKilled=false`. Results: `ml/results/leaderboard_scale_full_lightgbm.csv`
+  (229 B, `kAZAhw==`), `scale_full_lightgbm.json` (744 B, `OK474g==`),
+  `rescale_scale_full_vm.log` (1,737 B, `vBL0aQ==`).
+- **The goal stopped here, once: "RESCALE STOPPED: the VM ran 204.18 minutes."** The job
+  ended at VM minute 42.7 and the delete was issued at minute 44.2, but the delete did
+  not reach GCP until 06:14:44Z. The laptop was awake for the first 87 minutes of that
+  wait and the command still did not start, so it most likely waited on a harness
+  permission prompt; the lid then closed at 05:02Z and opened at 06:14:33Z, 11 s before
+  the delete. **Cost: 204.18 min x $0.368448/h = $1.25**, at the Billing Catalog rates
+  read 2026-09-25 (E2 core $0.02181159/h, E2 RAM $0.00292353/GiB-h, balanced PD
+  $0.10/GiB-month). The lesson: create the VM with `--max-run-duration` and
+  `--instance-termination-action=DELETE`, so its end never depends on an interactive step.
+- **A price disagreement, not resolved:** the same catalog rates give `e2-standard-4`
+  $0.134/h, while "The TUNE results" above records $0.161/h as VERIFIED.
+- **The owner continued the goal on 2026-09-26** after the stop, from step 6, all other
+  rules unchanged.
+
+**The MLlib row-3 arm — batch `m4scale-20260926`, SUCCEEDED.** Dataproc Serverless
+runtime 3.0 (Spark 4.0.2, Python 3.12.12), `01_mllib_baseline.py --cluster
+--drop-corridor` on the new train split, 5 folds, seed 42, GBT maxIter=100 maxDepth=5,
+`maxExecutors=4`, `--ttl=175m`. Code at `8613595` in `dependencies/m4scale-8613595/`
+(`01_mllib_baseline.py` 23,524 B `mUmlvg==`; `mllib_deps.zip` 30,561 B `887JcA==`).
+
+- Master **`dataproc`**, `default_parallelism` 8. **2 executors** registered, at 15:54:10Z
+  and 15:54:28Z on 10.128.0.27 and 10.128.0.28; none lost. Dynamic allocation never
+  asked for the other two that `maxExecutors=4` allowed.
+- **22,603,549 rows** read — the same count as the object.
+
+  | run | rows | MAE | RMSE | R² | fit per fold | elapsed |
+  |---|---:|---|---|---|---:|---:|
+  | `mllib_gbt_nocorr@full22603k` | 22,603,549 | **0.465098 ± 0.002346** | 1.153382 ± 0.005396 | 0.985878 ± 0.000125 | 1,238.1 s | 6,583.6 s |
+  | row 3 on the work split, context only | 1,355,641 | 0.453134 ± 0.003220 | 1.138785 ± 0.006900 | 0.986234 ± 0.000206 | — | 2,055.2 s |
+
+  Per fold, MAE 0.4663 / 0.4657 / 0.4683 / 0.4637 / 0.4614 and fit 1,263.7 / 1,249.3 /
+  1,302.6 / 1,209.5 / 1,165.4 s. RUNNING 112.5 min (15:52:53Z to 17:45:21Z).
+- **Cost:** 96,454.390 DCU-seconds = 26.7929 DCU-hours = **$1.6076** at $0.06; shuffle
+  storage 7,033,107 GB-seconds = 1,953.6 GB-hours = **$0.1070** at $0.000054795; the
+  batch **$1.71**. The pre-run linear estimate (about 6.9 h, about $10, ESTIMATED) was
+  4x too high on time. The batch took 3.2x row 3's work-split elapsed for 16.7x the rows —
+  a cross-machine ratio (cloud against the local dev container), not a scaling law.
+- Outputs: `ml/results/leaderboard_mllib_cloud_nocorr_scale_full.csv` (236 B,
+  `MlSjKQ==`) and `sweep_mllib_cloud_nocorr_scale_full.json` (1,137 B, `LVvakg==`).
+
+**Reading, on the same 22,603,549 rows (fold membership differs by library, as in §5b).**
+LightGBM beats MLlib row 3 by 0.160528 MAE — 1.53x more accurate — and fits a fold in
+307.1 s against 1,238.1 s. At 16.7x the rows, LightGBM's CV MAE fell 0.008406 below its
+work-split number; MLlib row 3's rose 0.011964 above its own. Both are CV numbers only
+(§5c), so neither ever sits beside the Phase 5 holdout score.
+
+**Total RESCALE spend: $2.97** — the VM $1.25 and the batch $1.71 — under the $6 cap.
+After the batch, `gcloud compute instances list` and the batches `RUNNING`/`PENDING`
+filter both return empty (2026-09-26 17:47Z).
+
+Next: Phase 5's one holdout score, on the champion.
+
+#### HOLDOUT — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after RESCALE. It is stored as accepted; paste it
+as written. The decisions:
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | Which model gets the one score | **The tuned champion fitted on the work split's 1,355,641 train rows** (option A) | `00_prep_spark.py` draws `sample_work` from `sample_full`, so about three quarters of the work holdout sit in `sample_full_train.parquet`. The RESCALE model has seen them; §5c stays CV only (decision 4 above) |
+| 2 | Which sets | **Both sealed sets of `sample_work`**: the random holdout (338,911) and the temporal set (133,629) | §4a step 3: report the pair; agreement or divergence is the result |
+| 3 | Rejected: option B | The RESCALE refit on `sample_full`'s own sealed sets (5,650,888 / 2,228,057) | The champion's params were tuned on rows inside that holdout, and it contradicts decision 4 |
+| 4 | "Scored exactly once" | **A once-only guard in code**: the script refuses when the score file exists | §4a calls this "the part no code enforces". The file is gitignored, so the committed docs stay the permanent record |
+
+Measured while the goal was written, 2026-09-26: `sample_work.parquet` 1,828,181 rows
+(part-00000 55,157,841 B `xRpTjg==`; part-00001 55,316,815 B `r4pp0Q==`);
+`sample_work_train.parquet` 1,355,641 rows, 16,406,311 B, `1fvgNQ==` (equal to the
+migration plan's record); gate host 399 passed, 2 skipped, container 415 passed. No D-012
+holdout or temporal score exists — `holdout_smoke` is a pre-D-012 32,000-row wiring run
+that carved a holdout and never scored it.
+
+<details><summary>The HOLDOUT goal command</summary>
+
+```text
+/goal Score the tuned LightGBM champion once on the sealed pair: the random holdout and the temporal set of sample_work. MET only when the transcript shows a final report headed "HOLDOUT DONE" with all of:
+(a) note: the HOLDOUT decisions + this goal in the modeling plan §6;
+(b) TDD: a failing test in the container for a once-only guard (refuses when the score file exists) and for the scoring helper, then code;
+(c) 04_holdout_score.py: carve counts equal FACTS; the train target equals sample_work_train.parquet;
+(d) the one score, fit on 1,355,641 rows with CHAMPION_PARAMS: MAE/RMSE/R² on the holdout (338,911) and on the temporal set (133,629); temporal MAE for 2016-11 and 2016-12; fit time;
+(e) the CV MAE 0.312976 ± 0.001181 as context; the holdout-CV and temporal-holdout gaps stated; nothing re-selected on them;
+(f) docs, measured only (D-009): §6 + Status; §4a step 3 checked;
+(g) commits: note, guard+script, results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "HOLDOUT STOPPED:". Stop after 25 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §4a, §6 "The TUNE results" and "The RESCALE results"; D-009.
+- Decision: sample_work is drawn from sample_full (00_prep_spark.py), so the RESCALE model has seen ~3/4 of the work holdout. The score uses the work-split fit only; §5c stays CV only.
+- spark/ml/data/sample_work.parquet: 1,828,181 rows; part-00000 55,157,841 B xRpTjg==; part-00001 55,316,815 B r4pp0Q==.
+- sample_work_train.parquet: 1,355,641 rows, 16,406,311 B, 1fvgNQ==.
+- Carve: temporal 133,629 (>= 2016-11-01), holdout 338,911 (HOLDOUT_FRACTION 0.2, seed 42), train 1,355,641.
+- Params: CHAMPION_PARAMS in 03_scale_champion.py. load_prep_sample and write_train_split at 8613595.
+- No holdout or temporal score exists; holdout_smoke is a pre-D-012 32,000-row wiring run.
+- Gate: host .venv/bin/pytest tests/ -> 399 passed, 2 skipped; container 415 passed (2026-09-26).
+- Local only: the dev container, no cloud resource, no spend.
+
+STEPS
+1. Gate both. Commit the note.
+2. TDD the guard and the helper. Commit with the script.
+3. Run 04_holdout_score.py once in the container. Read the score file.
+4. Docs (f). Commit.
+5. Final gate. Print "HOLDOUT DONE" with (a)-(g); next = CASE_STUDY.md (D-005 unblocks).
+
+PRINT "HOLDOUT STOPPED: <reason>" AND END WHEN
+- a row/byte/crc32c count differs from FACTS;
+- the train target differs from sample_work_train.parquet;
+- a new test fails, or passes before its code exists;
+- the guard fires, or anything scores the sealed sets a second time;
+- a score would change the model, params, features or champion;
+- the container exits 137;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No GCS writes, no cloud resources.
+- Print metrics only, never sealed rows or predictions.
+- No re-tuning, no second fit on the sealed sets.
+- Out of scope: CASE_STUDY.md, an MLlib holdout score, §5c re-runs, Phase 6, the dashboard, dbt, terraform.
+```
+
+</details>
+
+#### The HOLDOUT result — Phase 5's one score (2026-09-26)
+
+Scored **once**, in the dev container, by `04_holdout_score.py` at `d91de1d`. The
+once-only guard ran before any load; the score file
+`spark/ml/results/holdout_d012.json` (gitignored) now blocks a second run, so this
+section is the permanent record. Inputs checked against FACTS first: `sample_work`
+part-00000 55,157,841 B `xRpTjg==`, part-00001 55,316,815 B `r4pp0Q==`,
+`sample_work_train.parquet` 16,406,311 B `1fvgNQ==`. The carve reproduced temporal
+133,629 / holdout 338,911 / train 1,355,641, and the train target equals
+`sample_work_train.parquet`.
+
+The model: `lightgbm` with the tuned champion params (TUNE trial 21), fitted once on the
+1,355,641 train rows in 25.7 s. Python 3.12.13, lightgbm 4.7.0, sklearn 1.7.1.
+
+| Set | Rows | MAE | RMSE | R² |
+|---|---:|---|---|---|
+| CV on the train rows, 5 folds (TUNE, context only) | 1,355,641 | 0.312976 ± 0.001181 | 0.924104 ± 0.029779 | 0.990926 ± 0.000596 |
+| **Random holdout** (2015-01 to 2016-10) | 338,911 | **0.311353** | 0.910174 | 0.991193 |
+| **Temporal set** (2016-11 to 2016-12) | 133,629 | **0.316332** | 0.924683 | 0.991211 |
+| — 2016-11 | 65,459 | 0.317243 | 0.885626 | 0.992020 |
+| — 2016-12 | 68,170 | 0.315457 | 0.960694 | 0.990415 |
+
+The two gaps, measured:
+
+- **Holdout against CV: −0.001623 MAE.** The holdout is slightly better than the CV mean,
+  by 1.37x the fold std. A likely reason is that the final fit uses all 1,355,641 rows
+  while each CV fold trained on 80% of them — **UNVERIFIED**, since testing it would take
+  another fit, and the sealed sets are scored once. The CV estimate was not optimistic.
+- **Temporal against holdout: +0.004979 MAE**, 1.6% relative, 4.2x the CV fold std.
+  RMSE rises 0.014509; R² is equal to three decimals. Both months sit above the holdout,
+  and December (0.315457) is no worse than November (0.317243), so the gap does not grow
+  across the two months measured.
+
+**Reading (§4a step 3).** The pair diverges, and the divergence is quantified: a model
+trained on 2015-01 to 2016-10 predicts the next two months' fares about half a cent per
+trip worse than it predicts random held-out trips from its own period. The random split
+was optimistic by that amount. At a fare MAE of $0.31 it is small, which fits the §4a
+prior that rate cards did not change across 2015-16. Nothing was re-selected on either
+score; the champion, params and features are unchanged.
+
+Next: `CASE_STUDY.md` — D-005 held it until Phase 5, and Phase 5 is complete.
 
 ---
 
@@ -424,7 +1100,13 @@ probe (`--sample full --only lightgbm`) before committing to a machine size.
 
 ## 8. Cross-cutting principles
 
-1. **Compute tiers:** sweep on `sample_work` (~500K–1M) for fast iteration; refit winner on `sample_full` (~12.8M). Avoids minutes-per-fit × dozens of models.
+1. **Compute tiers:** sweep on `sample_work` for fast iteration; refit winner on `sample_full`. Avoids minutes-per-fit × dozens of models.
+   **Sizes since the 2026-09-13 baseline, measured:** `sample_work` **1,828,181** rows, of
+   which the sweep trains on **1,355,641** (§4a); `sample_full` **30,482,494** rows. The
+   owner kept the emitted sizes rather than re-run or subsample to the original tiers
+   (~500K–1M and ~12.8M), so the local work sweep runs on about 2.2x the old 612,609
+   training rows. `sample_full` stays in GCS — §5c trains in the cloud — so a local
+   `--sample full` run fails until someone fetches it.
 2. **Reproducibility:** fixed `random_state` everywhere; persist samples + fitted preprocessors so the leaderboard is regenerable.
 3. **Leakage-safe by construction:** all preprocessing inside Pipelines fit on train folds only; target encoding cross-fitted.
 4. **Fair comparison:** every model through the one harness, same folds, same metrics.
@@ -608,9 +1290,94 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
         Spark 4.0.1 on 2026-09-02** and both still hold, so neither is a 4.1-only quirk;
         the explicit `targetType="continuous"` and the demoting `SQLTransformer` stay
         mandatory on the Dataproc Serverless runtime too. See the migration plan 2.4.
-- [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M) for
+- [x] **Baseline set from the D-012 cloud prep — 2026-09-13.** The samples now come from
+      `prep-m4-20260913-full` on the rebuilt `dbt_prod.fact_trips`, not the pre-D-012
+      local backup. `sample_work.parquet` and `prep_stats.json` came down from
+      `gs://primary-data-dtc-506916/ml/prep/`, byte- and CRC32C-equal to the objects.
+      - `prep_stats.json`: raw 307,339,039, guarded 304,766,876, `sample_work` 1,828,181,
+        `sample_full` 30,482,494. Caps: Yellow $52.0 / 18.5 mi, Green $44.5 / 13.9 mi,
+        duration 57.5 min — each inside Q1's exact p98.9–p99.1 band (option A).
+      - Split: temporal 133,629 / holdout 338,911 / train 1,355,641 (§4a). The new
+        `sample_work_train.parquet` holds the 1,355,641. No holdout or temporal metric
+        was computed.
+      - `00_prep_spark.py` now requires `--source` (`b4e65e3`).
+      - The pre-D-012 samples are archived, not deleted, in
+        `../nyc_taxi_migration_backup/prep-pre-d012-local/`: 26 files, 309,398,759 bytes,
+        SHA-256-equal after the move.
+      - Every result in the §5b table and in the rows above is pre-D-012 and does not
+        compare across this line (D-012). Next: the M4 smoke.
+- [x] **The MLlib baseline on the D-012 split, local and cloud (M4 smoke) — 2026-09-15.**
+      `mllib_gbt@work1355k`: the §5b row 2 configuration (5 folds, seed 42, GBT maxIter=100
+      maxDepth=5, `TargetEncoder` smoothing 5) on the 1,355,641-row train split.
+      - MAE $0.466188 ± 0.005356, RMSE 1.201377 ± 0.021579, R² 0.984675 ± 0.000561.
+      - Local, 2026-09-14: dev container, Spark 4.0.1, `local[8]`, `default_parallelism` 8,
+        2,961.4 s. Cloud, 2026-09-15: Dataproc Serverless batch `m4-smoke-20260915`, master
+        `dataproc`, 2 executors, `default_parallelism` 8, 4,301.8 s, $1.12. The two agree to
+        floating-point precision — the migration plan M4 carries the gate and the costs.
+      - This is the first post-D-012 MLlib row. It does not compare with the pre-D-012
+        rows in §5b, and no holdout or temporal metric was computed.
+      - Next: §5.3's out-of-fold encoder (migration plan §5.3).
+- [x] **The mechanism test: row 3 and the out-of-fold row on the D-012 split — 2026-09-15.**
+      `src/oof_encode.py` (`8f67d17`) and `01_mllib_baseline.py --oof` (`36cedd5`), test
+      first. Local, dev container, Spark 4.0.1, `local[8]`, the same folds as row 2.
+      - Row 3, `mllib_gbt_nocorr@work1355k`: MAE 0.453134 ± 0.003220, RMSE 1.138785 ±
+        0.006900, R² 0.986234 ± 0.000206, 2,055.2 s.
+      - OOF, `mllib_gbt_oof@work1355k`: MAE 0.462342 ± 0.000505, RMSE 1.161502 ± 0.011404,
+        R² 0.985679 ± 0.000304, 2,886.7 s.
+      - The corridor stays net-negative in MLlib even cross-fitted. On MAE the OOF row is
+        inside row 2's fold std; on RMSE and R² it sits materially between rows 2 and 3.
+        §5b's D-012 table carries the reading.
+      - Next: the owner's §5.4 decision (migration plan §5.4).
+- [x] **Phase 4 re-run on the D-012 split — 2026-09-15.** This closes the "re-run pending"
+      above. `01_run_sweep.py --tag work_d012` in the dev container: 14 models, 5 folds,
+      1,355,641 train rows, holdout 338,911 and temporal 133,629 both SEALED and unscored,
+      7,468.0 s. python 3.12.13, numpy 2.4.6, sklearn 1.7.1, lightgbm 4.7.0, xgboost 3.3.0,
+      catboost 1.2.10.
+      - Row 1, `lightgbm`: MAE 0.331289 ± 0.001310, RMSE 0.936259 ± 0.029962, R² 0.990686 ±
+        0.000610, 5.1 s per fold. Against row 2 it is 1.41x more accurate and 105x faster.
+      - Top 4 by RMSE: `catboost` 0.928765, `lightgbm` 0.936259, `stacking` 0.937680,
+        `extra_trees` 0.947680 — the same four as the voided list, first two swapped, their
+        gap inside the fold std. §5c's scope is re-derived in §5c.
+      - The owner read §5.4 on MAE, so D2 stands as **D-013**.
+      - Next: re-scope §5c for the 30,482,494-row `sample_full` with a lightgbm probe.
+- [x] **Phase 5, tuning and diagnostics on the work split — 2026-09-16/17.** The TUNE goal;
+      full record in §6, "The TUNE results". `lightgbm` and `catboost` tuned with Optuna,
+      5 folds, `work_d012`'s 1,355,641-row train split, holdout and temporal SEALED and
+      unscored throughout. Tuning **widens lightgbm's lead**: untuned it already beat
+      untuned catboost by MAE (D-013); tuned, lightgbm improves to 0.312976 ± 0.001181
+      (from 0.331289) while catboost barely moves, 0.319282 ± 0.001334 (from 0.320963) —
+      catboost had less room left to tune. **Champion: `lightgbm`**, by the owner's rule
+      (gap 0.006306 outside catboost's std). Diagnosed on out-of-fold predictions: slice
+      MAE by borough/temp-band/hour, mean |SHAP| (`distance_capped` and
+      `trip_duration_min` dominate), and the duration ablation (+0.912886 MAE without it).
+      CatBoost's tuning needed a short-lived GCE VM after the laptop froze three times —
+      $0.266, VM deleted after. Next: §5c at scale, then Phase 5's holdout score.
+- [x] **Cloud full-scale run (§5c, decided 2026-08-04) — DONE 2026-09-26 (RESCALE; §6, "The RESCALE results").** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped
-      champion + MLlib GBT rather than all 14.
-- [ ] Phase 5: tune + diagnose — scores the sealed holdout **once**, at the end (§4a)
-- [ ] Phase 6: neural nets
+      champion + MLlib GBT rather than all 14. **Rescoped 2026-09-16 (owner):** the champion
+      (`lightgbm`, tuned) plus the MLlib row-3 run only — `stacking`/`extra_trees` dropped.
+      Both train on `sample_full`, which contains the sealed rows
+      (`00_prep_spark.py:334`), so their numbers are **CV only** and never sit beside the
+      Phase 5 holdout score.
+      **Measured 2026-09-25/26**, both on the 22,603,549-row `sample_full_train.parquet`
+      (272,456,910 B, `gvslwA==`), 5 folds, holdout 5,650,888 and temporal 2,228,057 SEALED
+      and unscored:
+      - `lightgbm@scale_full`, tuned params, `e2-highmem-8` VM: MAE **0.304570 ± 0.000319**,
+        RMSE 0.875488 ± 0.007857, R² 0.991863 ± 0.000149; CV 1,762.1 s; peak RSS 26.93 GiB,
+        after the lean load (`8613595`) replaced the read that OOM-killed SCALE.
+      - `mllib_gbt_nocorr@full22603k`, batch `m4scale-20260926`, master `dataproc`, 2
+        executors: MAE 0.465098 ± 0.002346, RMSE 1.153382 ± 0.005396, R² 0.985878 ±
+        0.000125; 6,583.6 s; 96,454.390 DCU-s.
+      - Spend $2.97 (VM $1.25, batch $1.71). The goal stopped once when the VM passed 120
+        minutes while its delete waited; the owner continued it on 2026-09-26.
+- [x] **Phase 5: tune + diagnose — COMPLETE 2026-09-26.** Tuning and diagnostics done
+      2026-09-16/17 on the work split, above; §5c's refit done 2026-09-26. **The one
+      score**, `04_holdout_score.py` at `d91de1d`, the tuned `lightgbm` fitted on the
+      1,355,641 train rows: random holdout (338,911) MAE **0.311353**, RMSE 0.910174, R²
+      0.991193; temporal set (133,629) MAE **0.316332**, RMSE 0.924683, R² 0.991211
+      (2016-11 0.317243, 2016-12 0.315457). Holdout − CV MAE −0.001623; temporal −
+      holdout +0.004979. Scored once, guarded in code; nothing re-selected. §6, "The
+      HOLDOUT result". Next: `CASE_STUDY.md` (D-005). **Done 2026-09-26:** rewritten to
+      fare and moved to `notes/CASE_STUDY.md`; D-005 closed.
+- [ ] Phase 6: neural nets — **moved after the end of the project (D-014, 2026-09-16).**

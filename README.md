@@ -1,6 +1,6 @@
 # NYC Taxi Fare Prediction
 
-End-to-end data engineering pipeline built as part of the [DataTalksClub Data Engineering Zoomcamp](https://github.com/DataTalksClub/data-engineering-zoomcamp). The pipeline ingests NYC Taxi and Limousine Commission (TLC) trip records and daily climate data, transforms them through a dbt ELT layer, and surfaces analytical insights via a Looker Studio dashboard and an ML model that predicts the trip fare (`fare_capped`). The model lives in `spark/ml/` (scikit-learn sweep + Spark MLlib baseline); its design and phase log live in `spark/2026-07-10-fare-prediction-modeling-plan.md`.
+End-to-end data engineering pipeline. It ingests NYC Taxi and Limousine Commission (TLC) trip records and daily climate data, transforms them through a dbt ELT layer, and surfaces analytical insights via a Looker Studio dashboard and an ML model that predicts the trip fare (`fare_capped`). The model lives in `spark/ml/` (scikit-learn sweep + Spark MLlib baseline); its design and phase log live in `spark/2026-07-10-fare-prediction-modeling-plan.md`.
 
 > The project began as a trip-*duration* predictor and was reoriented to fare prediction;
 > the repository folder name (`nyc_taxi_durationprediction`) predates the pivot.
@@ -179,7 +179,8 @@ tests/
 │   ├── ml/                             # fare-model prep/feature/eval unit tests
 │   │   ├── test_features.py
 │   │   ├── test_preprocess.py
-│   │   └── test_evaluate.py
+│   │   ├── test_evaluate.py
+│   │   └── test_prep_cli.py            # guard: a prep run never starts without a named --source
 │   ├── test_credential_decoupling.py   # guard: old keyfile name never re-hardcoded
 │   └── test_docker_runtime.py          # guard: build context, dbt pins, Jupyter exposure
 └── integration/
@@ -218,7 +219,7 @@ docker compose -f docker/dev/docker-compose.yml run --rm dev pytest tests/
 
 # One-off script, interactive shell, dbt
 docker compose -f docker/dev/docker-compose.yml run --rm dev \
-  python spark/ml/00_prep_spark.py --limit-files 3
+  python spark/ml/00_prep_spark.py --source local --limit-files 3
 docker compose -f docker/dev/docker-compose.yml run --rm dev bash
 docker compose -f docker/dev/docker-compose.yml run --rm dev dbt --version
 
