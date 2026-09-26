@@ -454,6 +454,27 @@ class TestWriteTrainSplit:
             ev.write_train_split(X, y, tmp_path / "t.parquet",
                                  target_name="distance_capped")
 
+    def test_chunked_write_equals_the_whole_frame(self, frame, tmp_path):
+        """The §5c scale-up writes 18M+ rows; a `pd.concat` of X and y is a
+        full second copy of the feature frame (plan §6, "RESCALE"). Written in
+        row chunks, the file must hold exactly what the concat held."""
+        X, y = frame
+        X_tr, _, y_tr, _ = ev.make_holdout(X, y, test_size=0.2)
+        out = tmp_path / "train.parquet"
+        ev.write_train_split(X_tr, y_tr, out, chunk_rows=7)
+        expected = pd.concat([X_tr, y_tr], axis=1).reset_index(drop=True)
+        pd.testing.assert_frame_equal(pd.read_parquet(out), expected,
+                                      check_exact=True)
+
+    def test_chunked_write_emits_one_row_group_per_chunk(self, frame, tmp_path):
+        """Proves the rows went out chunk by chunk, not as one built frame."""
+        import pyarrow.parquet as pq
+
+        X, y = frame
+        out = tmp_path / "train.parquet"
+        ev.write_train_split(X, y, out, chunk_rows=7)
+        assert pq.ParquetFile(out).metadata.num_row_groups == 15  # ceil(100/7)
+
 
 # ---------------------------------------------------------------------------
 # train_split_filename — derived from content, never from --tag

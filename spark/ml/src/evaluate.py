@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from sklearn.metrics import (
     make_scorer,
     mean_absolute_error,
@@ -153,7 +155,9 @@ def train_split_filename(
     return "_".join(parts) + ".parquet"
 
 
-def write_train_split(X, y, path, target_name: str | None = None) -> Path:
+def write_train_split(
+    X, y, path, target_name: str | None = None, chunk_rows: int = 1_000_000
+) -> Path:
     """Persist the train half of the sealed split as one parquet file.
 
     The MLlib baseline (plan §5b) has to train on the *same* rows the sklearn
@@ -187,10 +191,31 @@ def write_train_split(X, y, path, target_name: str | None = None) -> Path:
             "duplicate would silently double that feature in Spark"
         )
 
-    frame = pd.concat([X, y.rename(name)], axis=1)
+    # Row chunks through one ParquetWriter, not `pd.concat` + `to_parquet`:
+    # the concat is a full second copy of X, which at §5c scale is the
+    # difference between fitting in RAM and not (plan §6, "RESCALE"). Each
+    # chunk is one row group; the schema is fixed by the first chunk so a
+    # chunk whose string column is all-null cannot drift to the null type.
+    if not X.index.equals(y.index):
+        y = y.reindex(X.index)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(path, index=False)
+    writer = None
+    try:
+        for start in range(0, len(X), chunk_rows):
+            chunk = X.iloc[start:start + chunk_rows].assign(
+                **{name: y.iloc[start:start + chunk_rows].to_numpy()}
+            )
+            table = pa.Table.from_pandas(
+                chunk, preserve_index=False,
+                schema=writer.schema if writer is not None else None,
+            )
+            if writer is None:
+                writer = pq.ParquetWriter(path, table.schema)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
     return path
 
 

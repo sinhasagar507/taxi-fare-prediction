@@ -51,8 +51,10 @@ from spark.ml.src.evaluate import (  # noqa: E402
     make_holdout,
     make_temporal_test,
     verify_carve_split,
+    write_train_split,
 )
 from spark.ml.src.features import build_features  # noqa: E402
+from spark.ml.src.load import load_prep_sample  # noqa: E402
 from spark.ml.src.tune import build_tuned_pipeline  # noqa: E402
 
 RESULTS_DIR = REPO_ROOT / "spark" / "ml" / "results"
@@ -88,7 +90,9 @@ def main() -> None:
                          "has no reason to match the work split's shares)")
     args = ap.parse_args()
 
-    df = pd.read_parquet(args.input)
+    # Lean load (plan §6, "RESCALE"): only the columns the feature path uses,
+    # decimals already float64. pd.read_parquet here OOM-killed a 32 GiB VM.
+    df = load_prep_sample(args.input)
     n_sample = len(df)
     print(f"[data] {args.input}: {n_sample:,} rows")
 
@@ -99,6 +103,7 @@ def main() -> None:
     del df_temporal
 
     X, y = build_features(df, include_duration=True)
+    del df  # the raw frame is dead weight from here on
     X, X_holdout, y, _ = make_holdout(X, y, test_size=HOLDOUT_FRACTION)
     n_holdout = len(X_holdout)
     del X_holdout
@@ -118,9 +123,8 @@ def main() -> None:
         raise SystemExit(f"[stop] carve shares differ from the work split "
                           f"beyond tolerance {args.tolerance}: {check}")
 
-    train_df = X.copy()
-    train_df[y.name] = y
-    train_df.to_parquet(args.write_train, index=False)
+    # Chunked, so the write never holds a second copy of X.
+    write_train_split(X, y, args.write_train)
     print(f"[write] {args.write_train} ({n_train:,} rows)")
 
     cv = make_cv(n_splits=args.folds)
