@@ -136,6 +136,8 @@ TLC files -> Airflow ingest DAGs -> GCS bucket
 - **One dev container** holds the whole ML stack; the Airflow stack is a separate image.
 
 ### Serving and monitoring
+The Airflow stack also ran on a cloud VM with no keyfile: the zone ingest DAG and its
+external-table DAG both succeeded, in 15 minutes of VM time for about $0.02 [MP M5].
 Batch only. The pair of holdout scores below is the first drift check. Scheduled scoring
 and retraining are not built.
 

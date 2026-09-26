@@ -1339,18 +1339,23 @@ RULES
 
 ### M5 — The Airflow VM, and D-006 closed
 
-- [ ] Verify the GCE price for the chosen machine on the Compute Engine page (3.1).
+- [x] Verify the GCE price for the chosen machine on the Compute Engine page (3.1).
       Minimum size: the compose stack runs a Postgres, scheduler, webserver, worker and
       triggerer; **the 1 GB `e2-micro` is ASSUMED too small** — an `e2-standard-2` (8 GB)
       is the first thing to try. ≤ 30 GB boot disk so a stopped VM is free.
-- [ ] Create the VM with SA `nytaxi-pipeline` attached, `cloud-platform` scope. Clone the
+- [x] Create the VM with SA `nytaxi-pipeline` attached, `cloud-platform` scope. Clone the
       repo on the VM, `docker compose up --build` **there** (amd64 — never push a Mac
       build). No keyfile is copied; `GOOGLE_APPLICATION_CREDENTIALS` is unset and the
       client libraries use ADC. Confirm `dbt/profiles.yml`'s `method: service-account` +
       `keyfile` lines handle an unset variable — UNVERIFIED; the `oauth` method is the
       fallback for the VM target.
-- [ ] Trigger one ingest DAG end to end from the VM's Airflow UI; it must reach the
+- [x] Trigger one ingest DAG end to end from the VM's Airflow UI; it must reach the
       external-table DAG. Then **stop the VM.**
+- **Done 2026-09-26** under the CLOSEOUT goal below, with two changes: the SA is
+  `dtc-de-course` (`nytaxi-pipeline` does not exist), and the code went over as a
+  `git archive`, not a clone, because the branch is unpushed. The trigger was the CLI,
+  not the UI. The record is "The M5 result" below. The `dbt/profiles.yml` question in the
+  second bullet stays **UNVERIFIED**: the zone DAGs never call dbt, and no dbt DAG ran.
 - **Gate:** the E2E tier in CLAUDE.md's table; VM state `TERMINATED` in
   `gcloud compute instances list`.
 - **Rollback:** delete the VM. Nothing else depends on it.
@@ -1432,6 +1437,70 @@ RULES
 ```
 
 </details>
+
+#### The M5 result (2026-09-26)
+
+Every number below is measured.
+
+- **Price, read 2026-09-26** from the Cloud Billing Catalog, Compute Engine, us-central1:
+  E2 core $0.02181159/h (`CF4E-A0C7-E3BF`), E2 RAM $0.00292353/GiB-h (`F449-33EC-A5EF`),
+  so `e2-standard-2` (2 vCPU, 8 GiB) is **$0.06701142/h**, equal to FACTS. Standard PD
+  $0.04/GiB-month (`D973-5D65-BAB2`). External IP on a standard VM: $0 for the first 720
+  h, then $0.005/h (`C054-7F72-A02E`).
+- **The override, test first (`18893f6`).** `airflow/docker-compose.vm.yaml` resets
+  `GOOGLE_APPLICATION_CREDENTIALS`, sets `AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT` to a bare
+  `google-cloud-platform://`, and replaces the volumes without `../secrets`, for all seven
+  Airflow services. `tests/unit/test_airflow_vm_override.py` failed first on the missing
+  file. Its `docker compose config` layer then caught a real defect: a `!reset` reached
+  through a YAML alias loses its tag, and Compose 2.31 kept the keyfile variable. The
+  resets are written inline per service.
+- **The VM.** `closeout-airflow-vm`, `e2-standard-2`, us-central1-a, Debian 12, 30 GB
+  `pd-standard`, `dtc-de-course@...` attached with the `cloud-platform` scope,
+  `--max-run-duration=120m --instance-termination-action=STOP`. Created 19:21:51Z;
+  RUNNING from 19:22:00.820Z.
+- **The first IAP `scp` failed** ("Connection closed"): it ran before the guest had
+  generated its host keys (19:22:20Z) and started `ssh.service` (19:22:26Z). The retry,
+  after the serial console showed `ssh.service` started, succeeded. One failure, not two.
+- **Code:** `git archive` of `airflow/` and `dbt/` at `18893f6`, 19,888 B, 31 entries,
+  none matching `secret`, `credential` or `.json`. Docker from `get.docker.com`: Docker
+  Compose v5.5.1. `.env` held only `AIRFLOW_UID`.
+- **No keyfile reached the VM or an image.** A `find` over the VM's disk for
+  `gcp-credentials.json` or a `.json` under a `secrets` path returned three Google Cloud
+  SDK test fixtures (`fake_client_secrets.json` and two others under
+  `/usr/lib/google-cloud-sdk/.../testdata` or `tests/data`), nothing else. The merged
+  config on the VM had the three keyfile strings only in the inert `x-airflow-common`
+  block; every service had none. No container mounted a `secrets` source. Inside the
+  worker: no `GOOGLE_APPLICATION_CREDENTIALS`, no `/.google`, and `google.auth.default()`
+  returned compute-engine `Credentials` for `dtc-de-project-506916`; the metadata server
+  named `dtc-de-course@dtc-de-project-506916.iam.gserviceaccount.com`.
+- **The stack.** `docker compose -f docker-compose.yaml -f docker-compose.vm.yaml up -d
+  --build` on the VM (amd64). All containers up by about 19:28Z; the scheduler's Docker
+  health check reads `unhealthy`, but `airflow jobs check --job-type SchedulerJob` found
+  one alive job, and it scheduled the runs below. The same unhealthy status was seen
+  locally in TUNE; its cause is **UNVERIFIED**.
+- **The runs.** Both DAGs unpaused; only `nyc_taxi_zone_ingestion_dag` triggered, run
+  `closeout_m5_zone`, 19:34:59Z.
+
+  | DAG | run | state | start | end |
+  |---|---|---|---|---|
+  | `nyc_taxi_zone_ingestion_dag` | `closeout_m5_zone` | **success** | 19:34:59.86Z | 19:35:25.68Z |
+  | `create_external_table_taxi_zone` | `manual__2026-09-26T19:35:09.189963+00:00` | **success** | 19:35:25.59Z | 19:35:30.68Z |
+
+  Tasks: `download_dataset_task`, `local_to_gcs_task`, `cleanup_local_file_task`,
+  `trigger_external_table`, `create_external_table` — all `success`.
+- **The object**, read after the run:
+  `gs://primary-data-dtc-506916/nyc_taxi_data/taxi_lookup_data/taxi_zone_lookup.csv`
+  **12,331 B, CRC32C `tzgoCw==`**, generation 1790451305011309, written 19:35:05Z —
+  equal in size and checksum to the generation of 2026-09-03 it replaced.
+- **Stopped.** `gcloud compute instances stop` at 19:36:30Z; `lastStopTimestamp`
+  19:37:07.485Z. `gcloud compute instances list`: `closeout-airflow-vm` **TERMINATED**,
+  the only instance. Dataproc `RUNNING`/`PENDING` batches: empty.
+- **Cost: 15.11 minutes RUNNING (0.2519 h).** VM $0.06701142 x 0.2519 = **$0.0169**;
+  external IP at most $0.0013 (inside the SKU's free first 720 h if unused this month);
+  disk while running $0.0004 at list price. **About $0.019 in total**, under the $1 cap.
+  The stopped 30 GB standard disk sits inside the 30 GB-month Always Free allowance (2.3).
+- **Gate** (E2E tier, CLAUDE.md): both DAG runs `success`, VM `TERMINATED`. **M5 is
+  complete, and D-006 is decided: keep the Deployment split** (closed in M6).
 
 ### M6 — Documents
 
@@ -2085,5 +2154,10 @@ Each with options and a recommendation. None is taken by this document.
       corridor (D-013). **Still open:** the machine size, because `sample_full` holds
       30,482,494 rows, 2.4x the figure §5c sized against, and it is in the bucket only.
       Next: the `--sample full --only lightgbm` probe (decision 3).
-- [ ] M5 — Airflow VM on ADC, one DAG end to end, VM stopped
+- [x] M5 — Airflow VM on ADC, one DAG end to end, VM stopped. **Complete 2026-09-26.**
+      `closeout-airflow-vm`, `e2-standard-2`, `dtc-de-course` attached, no keyfile, the
+      test-first override `airflow/docker-compose.vm.yaml` (`18893f6`).
+      `nyc_taxi_zone_ingestion_dag` and `create_external_table_taxi_zone` both `success`;
+      the object 12,331 B, `tzgoCw==`. 15.11 min RUNNING, about $0.019; `TERMINATED`.
+      Record: M5, "The M5 result".
 - [ ] M6 — documents reconciled; audit items 5, 6, 8 checked off
