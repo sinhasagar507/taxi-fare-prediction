@@ -1,0 +1,56 @@
+# VM override for M5: run the stack on a GCE VM with the attached service account's
+# Application Default Credentials, never a keyfile.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.vm.yaml up -d --build
+#
+# The base file authenticates three ways, all removed here for every Airflow service:
+#   - GOOGLE_APPLICATION_CREDENTIALS            -> !reset (client libraries fall back to ADC)
+#   - key_path in AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT -> a bare connection (the hook uses ADC)
+#   - the ../secrets bind mount                 -> !override volumes without it
+# !reset and !override need Docker Compose 2.24.4 or later.
+# Guarded by tests/unit/test_airflow_vm_override.py.
+
+# The environment is written out per service on purpose: a `!reset` reached through a
+# YAML alias loses its tag, and Compose 2.31 then keeps the keyfile variable (measured).
+x-vm-volumes: &vm-volumes !override
+  - ./dags:/opt/airflow/dags
+  - ./logs:/opt/airflow/logs
+  - ./plugins:/opt/airflow/plugins
+  - ../dbt:/opt/airflow/dbt
+
+services:
+  airflow-webserver:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  airflow-scheduler:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  airflow-worker:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  airflow-triggerer:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  airflow-cli:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  flower:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    volumes: *vm-volumes
+  # airflow-init already mounts only /sources; it needs the env reset alone.
+  airflow-init:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: !reset null
+      AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
