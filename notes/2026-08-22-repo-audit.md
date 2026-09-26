@@ -157,3 +157,71 @@ per-step review gate was suspended for that session only; nothing was pushed).
 
 Tests: 257 unit passed, 1 skipped. The 9 integration failures are pre-existing — they
 need a provisioned GCP project, and fail identically before and after this session.
+
+## SCRUB — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after CLOSEOUT. It removes every mention of the
+course this project began in from the tracked repository. It is stored as accepted, with
+one change, stated here: the goal's search pattern names the two course words, and a
+verbatim copy would make this note the one match the goal forbids. Each of its three
+occurrences reads `<course-words>` below. The pattern is the course's name in lower case
+and the organiser's name in lower case, joined by `|`.
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | Named mentions in the project documents | **Remove them** from `CLAUDE.md`, `README.md` and `notes/CASE_STUDY.md` | No course mention in the README or anywhere in the code |
+| 2 | The inherited lesson notes (`notes/1_intro.md` … `6_streaming.md`, `extra1_preparing_data.md`, `notes/images/`) | **Untrack them, gitignore them, keep them on the owner's disk** | Material unrelated to running the project does not belong in `origin` |
+| 3 | Rejected for 2 | Delete the files; or strip only the words | The owner keeps the notes locally; a word-level edit leaves course material in the repository |
+| 4 | The `dtc` abbreviation | **Rename the DAG tag `dtc-de` to `nyc-taxi`; keep the live GCP names** | Renaming the project, bucket or service account means new cloud resources |
+| 5 | Git history | **Out of scope** | Old commits still hold the lesson files; only a history rewrite removes them |
+
+Measured while the goal was written, 2026-09-26: 56 staged deletions (7 lesson files, 49
+images); `git ls-files notes` 11; the `dtc-de` tag at four DAG lines and two legacy stubs;
+gate host 415 passed, 2 skipped, container 430 passed, 1 skipped. Re-measured at step 1:
+the same gate on both, HEAD `c2360d2`.
+
+<details><summary>The SCRUB goal command</summary>
+
+```text
+Remove every course mention from the tracked repository: finish the staged scrub, rename the DAG tag dtc-de, commit. MET only when the transcript shows a final report headed "SCRUB DONE" with all of:
+(a) note: the SCRUB decisions + this goal in notes/2026-08-22-repo-audit.md, committed alone;
+(b) git grep -nIi -E "<course-words>" returns nothing; git ls-files notes shows 11 files; the 7 lesson files + 49 images still on disk and git check-ignore'd;
+(c) tag: git grep -nI "'dtc-de'" returns nothing; 4 DAGs and 2 airflow/tests stubs say 'nyc-taxi';
+(d) the live GCP names unchanged (dtc-de-project-506916, primary-data-dtc-506916, dtc-de-course@);
+(e) commits: note, scrub, tag; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "SCRUB STOPPED:". Stop after 20 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Owner decisions 2026-09-26: no course mention in the README or anywhere in the code; untrack the course notes, gitignore them, keep them locally; rename the DAG tag only, keep the GCP names.
+- HEAD c2360d2, refactor/wire-pipeline, 11 commits ahead of origin.
+- Staged: 56 deletions (notes/1_intro.md, 2_data_ingestion.md, 3_data_warehouse.md, 4_analytics.md, 5_batch_processing.md, 6_streaming.md, extra1_preparing_data.md, notes/images/ 49 files); .gitignore (8 new paths); notes/README.md (Course notes section cut).
+- Unstaged: CLAUDE.md:43, README.md:3, notes/CASE_STUDY.md:11 mentions removed. CLAUDE.md 222 lines.
+- git grep <course-words>: no match. git ls-files notes: 11.
+- Tag 'dtc-de': airflow/dags/nyc_climate_gcs_dag.py:120, nyc_taxi_gcs_green_dag.py:89, nyc_taxi_gcs_yellow_dag.py:89, nyc_taxi_zone_gcs_dag.py:78; airflow/tests/test_nyc_climate_dag.py:73, test_nyc_taxi_yellow_dag.py:69 (legacy stubs, not in the gate).
+- tests/unit/test_stale_ids.py and tests/unit/dags/test_dag_config.py match the dtc-de- project-ID pattern; they are not the tag. Leave them.
+- Gate: host 415 passed, 2 skipped (2026-09-26, with the staged scrub); container 430 passed, 1 skipped (2026-09-26, c2360d2).
+- Git history still holds the files; a rewrite is out of scope.
+
+STEPS
+1. Gate both. Write the SCRUB section (decisions table + this goal in <details>) into the audit note. Commit that path only.
+2. Stage CLAUDE.md, README.md, notes/CASE_STUDY.md with the staged scrub. Check (b). Commit.
+3. Rename the tag in the 4 DAGs and 2 stubs. Check (c), (d). Commit.
+4. Final gate. Print "SCRUB DONE" with (a)-(e); next = README reconciliation to D-012 counts.
+
+PRINT "SCRUB STOPPED: <reason>" AND END WHEN
+- a lesson file or image is missing from disk, or not ignored;
+- a file outside FACTS would be deleted, untracked or edited;
+- a <course-words> match remains after step 2;
+- a new test fails;
+- a live GCP name would change;
+- a conflict with a LOCKED entry;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No cloud calls. No history rewrite. Delete no file from disk.
+- Out of scope: the README trip counts, the dashboard, dbt edits, terraform, the PR, a push.
+```
+
+</details>
