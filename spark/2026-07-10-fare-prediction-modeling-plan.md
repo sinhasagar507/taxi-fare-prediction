@@ -870,6 +870,111 @@ RULES
 
 </details>
 
+#### The RESCALE results — §5c at scale (2026-09-25/26)
+
+Every number below is measured. No holdout or temporal metric was computed anywhere; the
+sealed rows were carved, counted and deleted in the same statement. The TUNE numbers
+appear only as context, never as a gate.
+
+**The lean load (`8613595`), test first.** `spark/ml/src/load.py`'s `load_prep_sample`
+projects away the five columns `build_features` drops and nothing reads (`tripid`,
+`fare_amount`, `trip_distance`, `temperature`, `ratecodeid`) and casts the three
+decimal128 climate columns to float64 in Arrow. `evaluate.write_train_split` now writes in
+1,000,000-row chunks through one `ParquetWriter` instead of a `pd.concat` copy of X, and
+`03_scale_champion.py` frees the raw frame after `build_features`.
+
+- RED in the dev container first: `tests/unit/ml/test_load.py` failed on the missing
+  module, and the two chunked-write tests failed on the missing `chunk_rows` argument.
+- **The first GREEN attempt found a real defect.** pyarrow 21's direct `decimal128(38, 9)
+  -> float64` cast is one ULP off on values such as 0.123456789
+  (0.12345678900000001), while the `pd.read_parquet` path rounds correctly. The cast
+  now goes through the exact decimal string, which Arrow parses with correct rounding.
+- On the real `sample_work` (1,828,181 rows), `build_features` on the lean frame equals
+  the `pd.read_parquet` path exactly: X 1,694,552 x 15 after the temporal carve.
+
+**The smoke, dev container, `sample_work`, under `/usr/bin/time -v`:** peak RSS 2,256,072
+KiB (2.152 GiB), fit included; 1:58.42 wall; CV 109.8 s. MAE 0.312976 ± 0.001181 — equal
+to the TUNE champion. Peak x 16.674 = **35.88 GiB, EXTRAPOLATED**, under the 50 GiB stop
+line. One earlier attempt of the same command exited 0 in 1.22 s with no output and no
+files; it was not reproduced and is unexplained.
+
+**The VM run.** `rescale-vm`, `e2-highmem-8` (8 vCPU, 62 GiB visible), us-central1-a,
+Debian 12, `dtc-de-course@...` attached as the VM's service account — **no keyfile was
+copied**, and the attached identity could read and write the bucket. The dev image was
+built on the VM from `docker/dev/Dockerfile` (amd64): Python 3.12.14, numpy 2.5.3 (the
+local image has 2.4.6), pandas 2.3.1, pyarrow 21.0.0, scikit-learn 1.7.1, lightgbm 4.7.0.
+
+- **Fetch:** serial `gsutil`, about one minute. All 8 parts equal the source objects in
+  size and CRC32C; 1,836,372,066 bytes in total; 30,482,494 rows in the parquet metadata.
+- **Carve:** temporal 2,228,057 / holdout 5,650,888 / train 22,603,549 — they sum to
+  30,482,494. Shares 0.073093 / 0.200000 / 0.741526, inside tolerance of the work split's.
+- **`gs://primary-data-dtc-506916/ml/samples/sample_full_train.parquet`:** 22,603,549
+  rows, 23 row groups, 16 columns (the work split's columns, in the same order);
+  272,456,910 bytes; CRC32C `gvslwA==`, equal on the VM and in GCS. The object did not
+  exist before.
+- **LightGBM refit-CV, tuned champion params, 5 folds, seed 42, `--memory=58g`:**
+
+  | run | rows | MAE | RMSE | R² | fit per fold | CV elapsed |
+  |---|---:|---|---|---|---:|---:|
+  | `lightgbm@scale_full` | 22,603,549 | **0.304570 ± 0.000319** | 0.875488 ± 0.007857 | 0.991863 ± 0.000149 | 307.1 s | 1,762.1 s |
+  | TUNE, context only | 1,355,641 | 0.312976 ± 0.001181 | 0.924104 ± 0.029779 | 0.990926 ± 0.000596 | 19.1 s | — |
+
+  Wall time 31:46.58; **peak RSS 28,239,372 KiB (26.93 GiB)**, against the 35.88 GiB
+  extrapolation; exit 0, `OOMKilled=false`. Results: `ml/results/leaderboard_scale_full_lightgbm.csv`
+  (229 B, `kAZAhw==`), `scale_full_lightgbm.json` (744 B, `OK474g==`),
+  `rescale_scale_full_vm.log` (1,737 B, `vBL0aQ==`).
+- **The goal stopped here, once: "RESCALE STOPPED: the VM ran 204.18 minutes."** The job
+  ended at VM minute 42.7 and the delete was issued at minute 44.2, but the delete did
+  not reach GCP until 06:14:44Z. The laptop was awake for the first 87 minutes of that
+  wait and the command still did not start, so it most likely waited on a harness
+  permission prompt; the lid then closed at 05:02Z and opened at 06:14:33Z, 11 s before
+  the delete. **Cost: 204.18 min x $0.368448/h = $1.25**, at the Billing Catalog rates
+  read 2026-09-25 (E2 core $0.02181159/h, E2 RAM $0.00292353/GiB-h, balanced PD
+  $0.10/GiB-month). The lesson: create the VM with `--max-run-duration` and
+  `--instance-termination-action=DELETE`, so its end never depends on an interactive step.
+- **A price disagreement, not resolved:** the same catalog rates give `e2-standard-4`
+  $0.134/h, while "The TUNE results" above records $0.161/h as VERIFIED.
+- **The owner continued the goal on 2026-09-26** after the stop, from step 6, all other
+  rules unchanged.
+
+**The MLlib row-3 arm — batch `m4scale-20260926`, SUCCEEDED.** Dataproc Serverless
+runtime 3.0 (Spark 4.0.2, Python 3.12.12), `01_mllib_baseline.py --cluster
+--drop-corridor` on the new train split, 5 folds, seed 42, GBT maxIter=100 maxDepth=5,
+`maxExecutors=4`, `--ttl=175m`. Code at `8613595` in `dependencies/m4scale-8613595/`
+(`01_mllib_baseline.py` 23,524 B `mUmlvg==`; `mllib_deps.zip` 30,561 B `887JcA==`).
+
+- Master **`dataproc`**, `default_parallelism` 8. **2 executors** registered, at 15:54:10Z
+  and 15:54:28Z on 10.128.0.27 and 10.128.0.28; none lost. Dynamic allocation never
+  asked for the other two that `maxExecutors=4` allowed.
+- **22,603,549 rows** read — the same count as the object.
+
+  | run | rows | MAE | RMSE | R² | fit per fold | elapsed |
+  |---|---:|---|---|---|---:|---:|
+  | `mllib_gbt_nocorr@full22603k` | 22,603,549 | **0.465098 ± 0.002346** | 1.153382 ± 0.005396 | 0.985878 ± 0.000125 | 1,238.1 s | 6,583.6 s |
+  | row 3 on the work split, context only | 1,355,641 | 0.453134 ± 0.003220 | 1.138785 ± 0.006900 | 0.986234 ± 0.000206 | — | 2,055.2 s |
+
+  Per fold, MAE 0.4663 / 0.4657 / 0.4683 / 0.4637 / 0.4614 and fit 1,263.7 / 1,249.3 /
+  1,302.6 / 1,209.5 / 1,165.4 s. RUNNING 112.5 min (15:52:53Z to 17:45:21Z).
+- **Cost:** 96,454.390 DCU-seconds = 26.7929 DCU-hours = **$1.6076** at $0.06; shuffle
+  storage 7,033,107 GB-seconds = 1,953.6 GB-hours = **$0.1070** at $0.000054795; the
+  batch **$1.71**. The pre-run linear estimate (about 6.9 h, about $10, ESTIMATED) was
+  4x too high on time. The batch took 3.2x row 3's work-split elapsed for 16.7x the rows —
+  a cross-machine ratio (cloud against the local dev container), not a scaling law.
+- Outputs: `ml/results/leaderboard_mllib_cloud_nocorr_scale_full.csv` (236 B,
+  `MlSjKQ==`) and `sweep_mllib_cloud_nocorr_scale_full.json` (1,137 B, `LVvakg==`).
+
+**Reading, on the same 22,603,549 rows (fold membership differs by library, as in §5b).**
+LightGBM beats MLlib row 3 by 0.160528 MAE — 1.53x more accurate — and fits a fold in
+307.1 s against 1,238.1 s. At 16.7x the rows, LightGBM's CV MAE fell 0.008406 below its
+work-split number; MLlib row 3's rose 0.011964 above its own. Both are CV numbers only
+(§5c), so neither ever sits beside the Phase 5 holdout score.
+
+**Total RESCALE spend: $2.97** — the VM $1.25 and the batch $1.71 — under the $6 cap.
+After the batch, `gcloud compute instances list` and the batches `RUNNING`/`PENDING`
+filter both return empty (2026-09-26 17:47Z).
+
+Next: Phase 5's one holdout score, on the champion.
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
@@ -1134,7 +1239,7 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
       `trip_duration_min` dominate), and the duration ablation (+0.912886 MAE without it).
       CatBoost's tuning needed a short-lived GCE VM after the laptop froze three times —
       $0.266, VM deleted after. Next: §5c at scale, then Phase 5's holdout score.
-- [ ] **Cloud full-scale run (§5c, decided 2026-08-04).** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
+- [x] **Cloud full-scale run (§5c, decided 2026-08-04) — DONE 2026-09-26 (RESCALE; §6, "The RESCALE results").** `sample_full` (12.75M; 30,482,494 since the 2026-09-13 baseline) for
       **both** sklearn and MLlib. Local machine measured at 4.8 GB frame / ~8.2 h for the
       whole sweep on an 18 GiB M3 Pro; scope the cloud run to the top 4 + corridor-dropped
       champion + MLlib GBT rather than all 14. **Rescoped 2026-09-16 (owner):** the champion
@@ -1142,7 +1247,18 @@ now would churn Docker mounts and import paths for cosmetics — not worth it.
       Both train on `sample_full`, which contains the sealed rows
       (`00_prep_spark.py:334`), so their numbers are **CV only** and never sit beside the
       Phase 5 holdout score.
+      **Measured 2026-09-25/26**, both on the 22,603,549-row `sample_full_train.parquet`
+      (272,456,910 B, `gvslwA==`), 5 folds, holdout 5,650,888 and temporal 2,228,057 SEALED
+      and unscored:
+      - `lightgbm@scale_full`, tuned params, `e2-highmem-8` VM: MAE **0.304570 ± 0.000319**,
+        RMSE 0.875488 ± 0.007857, R² 0.991863 ± 0.000149; CV 1,762.1 s; peak RSS 26.93 GiB,
+        after the lean load (`8613595`) replaced the read that OOM-killed SCALE.
+      - `mllib_gbt_nocorr@full22603k`, batch `m4scale-20260926`, master `dataproc`, 2
+        executors: MAE 0.465098 ± 0.002346, RMSE 1.153382 ± 0.005396, R² 0.985878 ±
+        0.000125; 6,583.6 s; 96,454.390 DCU-s.
+      - Spend $2.97 (VM $1.25, batch $1.71). The goal stopped once when the VM passed 120
+        minutes while its delete waited; the owner continued it on 2026-09-26.
 - [~] Phase 5: tune + diagnose. **Tuning and diagnostics done 2026-09-16/17** on the work
-      split, above. The sealed holdout is still unscored — it is scored **once**, after
-      §5c refits the champion on `sample_full` (§4a).
+      split, above. §5c's refit is done (2026-09-26). The sealed holdout is still
+      unscored — it is scored **once**, next (§4a).
 - [ ] Phase 6: neural nets — **moved after the end of the project (D-014, 2026-09-16).**

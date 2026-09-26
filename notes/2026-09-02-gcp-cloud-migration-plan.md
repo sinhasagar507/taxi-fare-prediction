@@ -1125,7 +1125,15 @@ voided 2026-09-03 record, kept as history. Do not quote its counts.
       for all of them, `m4-wiring-195925` included. Serverless runtime 3.0 injects
       `spark.master=local` and `MASTER=local`; a job that sets no master gets one
       thread. `--cluster` now names `dataproc`. Three probes, $0.04 together.
-- [ ] §5c MLlib arm on `sample_full` — after §5's encoder work decides *which* MLlib arm.
+- [x] §5c MLlib arm on `sample_full` — **Done 2026-09-26: `m4scale-20260926`, SUCCEEDED.**
+      Row 3's configuration (D-013), `--cluster --drop-corridor`, runtime 3.0 (Spark 4.0.2),
+      `maxExecutors=4`, `--ttl=175m`; code in `dependencies/m4scale-8613595/`. Input
+      `ml/samples/sample_full_train.parquet`: 22,603,549 rows, 272,456,910 B, `gvslwA==`.
+      Master `dataproc`, `default_parallelism` 8, 2 executors (10.128.0.27, 10.128.0.28),
+      none lost. MAE 0.465098 ± 0.002346, RMSE 1.153382 ± 0.005396, R² 0.985878 ±
+      0.000125; 6,583.6 s; RUNNING 112.5 min. **Cost:** 96,454.390 DCU-s = $1.61, shuffle
+      1,953.6 GB-h = $0.11, **$1.71**. CV only; no holdout or temporal metric. Full record
+      and the LightGBM arm: modeling plan §6, "The RESCALE results".
 - [x] `gcloud dataproc batches list` — nothing running; `gcloud compute instances list` —
       nothing exists. **Measured 2026-09-15**, after `m4-smoke-20260915`: 0 batches
       running or pending, 0 instances.
