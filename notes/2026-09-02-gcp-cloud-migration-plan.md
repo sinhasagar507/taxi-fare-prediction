@@ -1356,6 +1356,83 @@ RULES
 - **Rollback:** delete the VM. Nothing else depends on it.
 - **Cost:** hours × verified rate while running; $0 stopped.
 
+#### CLOSEOUT — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after Phase 5's one holdout score. It closes the
+project: the case study, M5 and M6 in one goal. It is stored as accepted; paste it as
+written. The decisions:
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | The per-step review in CLAUDE.md | **Suspended for this goal only** | The owner reviews the goal's commits at the end |
+| 2 | D-005 | **Reopened: rewrite `CASE_STUDY.md` to fare, move it to `notes/`** — not remove it | Phase 5 landed 2026-09-26, which is D-005's Reopen-if |
+| 3 | The VM's identity | **`dtc-de-course@dtc-de-project-506916.iam.gserviceaccount.com`**, attached | SA `nytaxi-pipeline` (M5's first bullet) does not exist; `dtc-de-course` read and wrote the bucket in RESCALE |
+| 4 | The keyfile lines in `airflow/docker-compose.yaml` | **A VM compose override, test first**, with no keyfile env var and no `../secrets` mount | The base file needs a keyfile three ways: `GOOGLE_APPLICATION_CREDENTIALS`, `key_path` in `AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT`, the `../secrets` mount |
+| 5 | Getting the code onto the VM | **`git archive` over IAP `scp`**, not a clone | The branch is unpushed |
+| 6 | Which DAG | **`nyc_taxi_zone_ingestion_dag`**, which triggers `create_external_table_taxi_zone` | The smallest ingest DAG: one 12,331 B object. dbt reads zones from its seed, so the rewrite changes no mart |
+| 7 | The VM | **`e2-standard-2`, us-central1-a, 30 GB, IAP SSH, `--max-run-duration=120m --instance-termination-action=STOP`** | M5's first size to try; the RESCALE lesson — the VM's end must not depend on an interactive step |
+
+Measured at step 1, 2026-09-26: the zone object
+`gs://primary-data-dtc-506916/nyc_taxi_data/taxi_lookup_data/taxi_zone_lookup.csv` is
+12,331 B, CRC32C `tzgoCw==`, generation 1788407685700341, last written 2026-09-03
+03:54:45Z; the instances list and the Dataproc `RUNNING`/`PENDING` batches are empty;
+gate host 407 passed, 2 skipped, container 423 passed. `CASE_STUDY.md` is 315 lines, 17,707 B, from `b443a1c`, and tells the duration
+story with pre-D-012 numbers.
+
+<details><summary>The CLOSEOUT goal command</summary>
+
+```text
+Close out the project: rewrite CASE_STUDY.md to the fare story, run one Airflow DAG end to end on a VM with ADC (M5), and reconcile the documents (M6). MET only when the transcript shows a final report headed "CLOSEOUT DONE" with all of:
+(a) note: the CLOSEOUT decisions + this goal in the migration plan, M5;
+(b) CASE_STUDY.md rewritten to fare, moved to notes/; every number cites a committed note; audit item 4 and 11 checked; D-005 closed;
+(c) TDD: a failing test for a VM compose override with no keyfile env or mount, then code;
+(d) M5: price read; VM up; zone DAG and create_external_table_taxi_zone both success; object size + crc32c; VM TERMINATED; minutes, dollars;
+(e) M6: CLAUDE.md GCP section replaced; audit items 5, 6, 8 checked; D-006 closed; one next pointer; the migration plan §5c line and M5/M6 checked;
+(f) docs measured only (D-009);
+(g) commits: note, case study, override, M5 docs, M6 docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "CLOSEOUT STOPPED:". Stop after 45 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Owner: reopen D-005 — Phase 5 landed 2026-09-26, its Reopen-if. Rewrite, not remove.
+- Read first: migration plan M5, M6; audit note; D-005, D-006; modeling plan §6 "The HOLDOUT result"; D-009.
+- CASE_STUDY.md: 315 lines, 17,707 B, from b443a1c; duration story, pre-D-012 numbers (128.8M trips, "59-test suite").
+- SA nytaxi-pipeline does NOT exist. Attach dtc-de-course@dtc-de-project-506916.iam.gserviceaccount.com (read/wrote the bucket in RESCALE).
+- airflow/docker-compose.yaml needs a keyfile: GOOGLE_APPLICATION_CREDENTIALS, key_path in AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT, ../secrets mount.
+- The branch is unpushed: ship code as git archive over IAP scp, not a clone.
+- Zone DAG: nyc_taxi_zone_ingestion_dag -> create_external_table_taxi_zone. Object gs://primary-data-dtc-506916/nyc_taxi_data/taxi_lookup_data/taxi_zone_lookup.csv: 12,331 B, tzgoCw==. dbt reads zones from its seed, not this table.
+- VM: e2-standard-2, us-central1-a, 30 GB, IAP SSH, --max-run-duration=120m --instance-termination-action=STOP. e2 rates 2026-09-25: $0.02181159/vCPU-h, $0.00292353/GiB-h = $0.0670/h.
+- Gate: host 407 passed, 2 skipped; container 423 passed (2026-09-26).
+- Instances list and RUNNING/PENDING batches: empty.
+
+STEPS
+1. Gate both. Commit the note.
+2. Rewrite CASE_STUDY.md (writeup rules); move to notes/; index it. Commit.
+3. TDD the override. Commit.
+4. Read the price. VM up; archive + scp; compose up --build with the override.
+5. Trigger the zone DAG; wait for both DAG runs; read the object.
+6. Stop the VM. Instances list. M5 docs. Commit.
+7. M6 docs. Commit.
+8. Final gate. Print "CLOSEOUT DONE" with (a)-(g); next = dashboard v3 (owner-built).
+
+PRINT "CLOSEOUT STOPPED: <reason>" AND END WHEN
+- a DAG run fails, or the object differs in size from 12,331 B;
+- the VM passes 120 minutes, or spend passes $1;
+- a keyfile reaches the VM or an image;
+- a new test fails, or passes before its code exists;
+- a conflict with a LOCKED entry other than D-005;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- Cloud writes only: the zone object, nyc_taxi_data.taxi_zone_external_table, the one VM.
+- Trigger no other DAG. Delete nothing in GCS or BigQuery. No BigQuery queries.
+- Case study: starter intro, no test counts, each test names its problem, plain terms; holdout numbers from §6 only.
+- Out of scope: the dashboard, dbt edits, terraform, Phase 6, the PR, a push.
+```
+
+</details>
+
 ### M6 — Documents
 
 - [ ] CLAUDE.md: replace the "GCP — not provisioned" section; keep "Deployment split"
