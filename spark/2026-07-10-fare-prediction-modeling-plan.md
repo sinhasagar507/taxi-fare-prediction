@@ -778,6 +778,98 @@ reason. Fetching the data proved the identity problem is solved and repeatable: 
 `dtc-de-course@...` from a copied keyfile, then run `gsutil` (never `gcloud storage cp`)
 serially.
 
+#### RESCALE — the owner's decisions and the goal (2026-09-25)
+
+The owner set this goal on 2026-09-25 to re-run §5c after the SCALE memory wall. It is
+stored as accepted; paste it as written. The decisions it carries:
+
+- **Load lean, then measure.** A new `load_prep_sample` reads only the columns
+  `build_features` keeps, at the pyarrow layer, and casts the three decimal128 climate
+  columns to float64 before the pandas conversion. It is test-first, and its
+  `build_features` output must equal the `pd.read_parquet` path's.
+- **Hold less at once.** `03_scale_champion.py` frees `df` after `build_features` and
+  writes the train split without the `X.copy()`.
+- **Size the VM from a measured peak.** A `--smoke` on `sample_work` in the container,
+  under `/usr/bin/time -v`, gives the peak RSS. The sample_full/sample_work row ratio,
+  30,482,494 / 1,828,181 = 16.674, scales it. Above 50 GiB the goal stops.
+- **A bigger VM, an attached identity.** `e2-highmem-8` (64 GiB), with
+  `dtc-de-course@...` attached as the VM's service account — no keyfile is copied up.
+  The container runs with `--memory=58g`, so a wall shows as a clear 137 exit, not a
+  silent one.
+- **The same transfer rule.** Serial `gsutil` only, and a CRC32C check on every part.
+
+Measured while the goal was written, 2026-09-25:
+
+- Gate: host `.venv/bin/pytest tests/` 390 passed, 2 skipped; the dev container 406
+  passed.
+- Host, `sample_work`, read + `build_features` peak: `pd.read_parquet` 3.03 GB
+  (x16.674 = 47.1 GiB); arrow projection + float cast 2.60 GB (40.4 GiB). Both
+  **EXTRAPOLATED**, and neither includes the fit.
+- The `e2-highmem-8` price is **UNVERIFIED** until it is read before the VM is created.
+
+<details><summary>The RESCALE goal command</summary>
+
+```text
+/goal Re-run §5c after the SCALE memory wall: lean load, measured peak, right-sized VM; refit the tuned LightGBM champion and MLlib row 3 on sample_full, CV only, holdout sealed. MET only when the transcript shows a final report headed "RESCALE DONE" with all of:
+(a) note: the RESCALE decisions + this goal in the modeling plan §6;
+(b) TDD load_prep_sample (arrow projection, decimal->float64): failing test in the container, then code; build_features equal to the pd.read_parquet path;
+(c) 03_scale_champion.py uses it, frees df after build_features, writes the train split with no copy; --smoke on sample_work: peak RSS, elapsed, peak x16.674;
+(d) sample_full_train.parquet carved, uploaded; rows, bytes, crc32c;
+(e) LightGBM refit-CV on the VM: mae/rmse/r2 mean+std, elapsed, peak RSS;
+(f) MLlib row-3 batch SUCCEEDED: master, executors, rows, mae/rmse/r2 mean+std, DCU-s, dollars;
+(g) TUNE numbers as context only; no holdout or temporal metric;
+(h) VM deleted; instances list and RUNNING/PENDING batches empty; total spend;
+(i) docs, measured only (D-009): §6 + Status; migration plan §5c;
+(j) commits: note, loader+script, results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "RESCALE STOPPED:". Stop after 40 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §6 "SCALE stopped"; D-009.
+- sample_full: gs://primary-data-dtc-506916/ml/prep/sample_full.parquet, 8 parts, 1,836,372,066 B, 30,482,494 rows. No sample_full_train.parquet in GCS.
+- 22 columns; build_features drops tripid, fare_amount, trip_distance, temperature, ratecodeid; humidity/windSpeed/visibility are decimal128.
+- Host, sample_work (1,828,181 rows), read+build_features peak: pd.read_parquet 3.03 GB (x16.674 = 47.1 GiB); arrow projection + float cast 2.60 GB (40.4 GiB). EXTRAPOLATED; fit excluded.
+- 03_scale_champion.py holds df, X and X.copy() at once.
+- Params: CHAMPION_PARAMS in 03_scale_champion.py.
+- VM: e2-highmem-8 (64 GiB), us-central1-a, IAP SSH, --service-account dtc-de-course@dtc-de-project-506916.iam.gserviceaccount.com, scope cloud-platform, no keyfile. Price UNVERIFIED; read it before creating.
+- Fetch with serial gsutil only (gcloud storage cp hung; gsutil -m corrupted data).
+- Container runs with --memory=58g.
+- MLlib: 01_mllib_baseline.py --cluster --drop-corridor, --input the new train split, maxExecutors=4, code at HEAD in dependencies/m4scale-<sha>/.
+- Gate: host .venv/bin/pytest tests/ -> 390 passed, 2 skipped. Container UNVERIFIED (Docker down).
+- Instances and RUNNING/PENDING batches: empty 2026-09-25.
+
+STEPS
+1. Gate both. Commit the note.
+2. TDD load_prep_sample. Wire it into 03_scale_champion.py. --smoke on sample_work in the container under /usr/bin/time -v. Commit.
+3. Read the VM price. VM up; fetch; crc32c each part.
+4. Carve, verify, upload sample_full_train.parquet; refit-CV; results to ml/results/.
+5. Delete the VM.
+6. Upload code; submit the MLlib batch; read meta + usage.
+7. Instances list; batches list.
+8. Docs (i). Commit.
+9. Final gate. Print "RESCALE DONE" with (a)-(j); next = the one holdout score.
+
+PRINT "RESCALE STOPPED: <reason>" AND END WHEN
+- the smoke peak x16.674 exceeds 50 GiB;
+- a row/byte/crc32c count differs from FACTS or between steps;
+- the container exits 137, or the VM passes 120 minutes;
+- the batch fails, master is not dataproc, or no executor ran;
+- spend passes $6;
+- a new test fails, or passes before its code exists;
+- anything computes a holdout or temporal metric;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- GCS writes only: ml/samples/sample_full_train.parquet, dependencies/m4scale-<sha>/, ml/results/.
+- Delete nothing in GCS. One VM, one batch, no re-runs.
+- Never score or print the holdout or temporal set.
+- No re-tuning; the params stay as in FACTS.
+- Out of scope: the holdout score, Phase 6, CASE_STUDY.md, the dashboard, dbt, terraform.
+```
+
+</details>
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
