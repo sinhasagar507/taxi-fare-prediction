@@ -975,6 +975,76 @@ filter both return empty (2026-09-26 17:47Z).
 
 Next: Phase 5's one holdout score, on the champion.
 
+#### HOLDOUT — the owner's decisions and the goal (2026-09-26)
+
+The owner set this goal on 2026-09-26, after RESCALE. It is stored as accepted; paste it
+as written. The decisions:
+
+| # | Question | Decision | Why |
+|---|---|---|---|
+| 1 | Which model gets the one score | **The tuned champion fitted on the work split's 1,355,641 train rows** (option A) | `00_prep_spark.py` draws `sample_work` from `sample_full`, so about three quarters of the work holdout sit in `sample_full_train.parquet`. The RESCALE model has seen them; §5c stays CV only (decision 4 above) |
+| 2 | Which sets | **Both sealed sets of `sample_work`**: the random holdout (338,911) and the temporal set (133,629) | §4a step 3: report the pair; agreement or divergence is the result |
+| 3 | Rejected: option B | The RESCALE refit on `sample_full`'s own sealed sets (5,650,888 / 2,228,057) | The champion's params were tuned on rows inside that holdout, and it contradicts decision 4 |
+| 4 | "Scored exactly once" | **A once-only guard in code**: the script refuses when the score file exists | §4a calls this "the part no code enforces". The file is gitignored, so the committed docs stay the permanent record |
+
+Measured while the goal was written, 2026-09-26: `sample_work.parquet` 1,828,181 rows
+(part-00000 55,157,841 B `xRpTjg==`; part-00001 55,316,815 B `r4pp0Q==`);
+`sample_work_train.parquet` 1,355,641 rows, 16,406,311 B, `1fvgNQ==` (equal to the
+migration plan's record); gate host 399 passed, 2 skipped, container 415 passed. No D-012
+holdout or temporal score exists — `holdout_smoke` is a pre-D-012 32,000-row wiring run
+that carved a holdout and never scored it.
+
+<details><summary>The HOLDOUT goal command</summary>
+
+```text
+/goal Score the tuned LightGBM champion once on the sealed pair: the random holdout and the temporal set of sample_work. MET only when the transcript shows a final report headed "HOLDOUT DONE" with all of:
+(a) note: the HOLDOUT decisions + this goal in the modeling plan §6;
+(b) TDD: a failing test in the container for a once-only guard (refuses when the score file exists) and for the scoring helper, then code;
+(c) 04_holdout_score.py: carve counts equal FACTS; the train target equals sample_work_train.parquet;
+(d) the one score, fit on 1,355,641 rows with CHAMPION_PARAMS: MAE/RMSE/R² on the holdout (338,911) and on the temporal set (133,629); temporal MAE for 2016-11 and 2016-12; fit time;
+(e) the CV MAE 0.312976 ± 0.001181 as context; the holdout-CV and temporal-holdout gaps stated; nothing re-selected on them;
+(f) docs, measured only (D-009): §6 + Status; §4a step 3 checked;
+(g) commits: note, guard+script, results docs; gate before/after; git status clean; unpushed.
+Judge IMPOSSIBLE if a line starts "HOLDOUT STOPPED:". Stop after 25 turns.
+
+FACTS
+- The owner suspends the CLAUDE.md per-step review for this goal.
+- Read first: modeling plan §4a, §6 "The TUNE results" and "The RESCALE results"; D-009.
+- Decision: sample_work is drawn from sample_full (00_prep_spark.py), so the RESCALE model has seen ~3/4 of the work holdout. The score uses the work-split fit only; §5c stays CV only.
+- spark/ml/data/sample_work.parquet: 1,828,181 rows; part-00000 55,157,841 B xRpTjg==; part-00001 55,316,815 B r4pp0Q==.
+- sample_work_train.parquet: 1,355,641 rows, 16,406,311 B, 1fvgNQ==.
+- Carve: temporal 133,629 (>= 2016-11-01), holdout 338,911 (HOLDOUT_FRACTION 0.2, seed 42), train 1,355,641.
+- Params: CHAMPION_PARAMS in 03_scale_champion.py. load_prep_sample and write_train_split at 8613595.
+- No holdout or temporal score exists; holdout_smoke is a pre-D-012 32,000-row wiring run.
+- Gate: host .venv/bin/pytest tests/ -> 399 passed, 2 skipped; container 415 passed (2026-09-26).
+- Local only: the dev container, no cloud resource, no spend.
+
+STEPS
+1. Gate both. Commit the note.
+2. TDD the guard and the helper. Commit with the script.
+3. Run 04_holdout_score.py once in the container. Read the score file.
+4. Docs (f). Commit.
+5. Final gate. Print "HOLDOUT DONE" with (a)-(g); next = CASE_STUDY.md (D-005 unblocks).
+
+PRINT "HOLDOUT STOPPED: <reason>" AND END WHEN
+- a row/byte/crc32c count differs from FACTS;
+- the train target differs from sample_work_train.parquet;
+- a new test fails, or passes before its code exists;
+- the guard fires, or anything scores the sealed sets a second time;
+- a score would change the model, params, features or champion;
+- the container exits 137;
+- the same tool failure happens twice.
+
+RULES
+- Stay on refactor/wire-pipeline. Never push. No Co-Authored-By.
+- No GCS writes, no cloud resources.
+- Print metrics only, never sealed rows or predictions.
+- No re-tuning, no second fit on the sealed sets.
+- Out of scope: CASE_STUDY.md, an MLlib holdout score, §5c re-runs, Phase 6, the dashboard, dbt, terraform.
+```
+
+</details>
+
 ---
 
 ## 7. Phase 6 — Switch to neural nets (only after classical champion locked)
