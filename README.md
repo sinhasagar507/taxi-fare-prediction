@@ -5,6 +5,10 @@ End-to-end data engineering pipeline. It ingests NYC Taxi and Limousine Commissi
 > The project began as a trip-*duration* predictor and was reoriented to fare prediction;
 > the repository folder name (`nyc_taxi_durationprediction`) predates the pivot.
 
+**To rebuild the whole project in your own GCP project**, follow
+[`REPLICATE.md`](REPLICATE.md). It covers every stage, from Terraform to the sealed
+holdout score, with a check at the end of each stage.
+
 ---
 
 ## Pipeline Architecture
